@@ -6,20 +6,10 @@ hidden process doesn't have. Errors are written to ``jarvix.log`` next to the
 project so a silent background crash is still debuggable.
 """
 
-import datetime
 import sys
 import traceback
-from pathlib import Path
 
-LOG = Path(__file__).resolve().parents[2] / "jarvix.log"
-
-
-def _log(msg: str) -> None:
-    try:
-        with open(LOG, "a", encoding="utf-8") as fh:
-            fh.write(f"{datetime.datetime.now().isoformat(timespec='seconds')}  {msg}\n")
-    except Exception:
-        pass
+from app.runtime.log import log as _log
 
 
 def main() -> None:

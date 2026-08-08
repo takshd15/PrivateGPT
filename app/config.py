@@ -12,8 +12,29 @@ OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 # News - app/tools/news.py (NewsAPI.org top-headlines).
 NEWS_API_KEY = os.getenv("NEWS_API_KEY", "")
 
-# Postgres (Supabase) - RAG memory of past interactions, app/memory/db.py.
+# Opportunity search - app/tools/websearch.py (Exa), intent FIND_OPPORTUNITIES.
+EXA_API_KEY = os.getenv("EXA_API_KEY", "")
+
+# Postgres (Supabase) - RAG memory + structured capture, app/memory/db/.
 DATABASE_URL = os.getenv("DATABASE_URL", "")
+
+# The Supabase users.id (uuid) that owns every row Jarvix writes to
+# tasks/projects/progress_events/etc. Single-user today; kept explicit so
+# the schema (which already has real per-user foreign keys) stays correct.
+USER_ID = os.getenv("USER_ID", "")
+
+# Background autopilot (app/runtime/scheduler.py). AUTOPILOT_ENABLED gates the
+# whole scheduler; the per-job flags only gate whether that job's DB write
+# happens - email extraction still runs either way since it's one combined
+# LLM call per email.
+def _truthy(name: str, default: str) -> bool:
+    return os.getenv(name, default).lower() in ("1", "true", "yes", "on")
+
+
+AUTOPILOT_ENABLED = _truthy("AUTOPILOT_ENABLED", "true")
+AUTOPILOT_EVENTS = _truthy("AUTOPILOT_EVENTS", "true")
+AUTOPILOT_APPLICATIONS = _truthy("AUTOPILOT_APPLICATIONS", "true")
+AUTOPILOT_EMAIL_SCAN_MINUTES = int(os.getenv("AUTOPILOT_EMAIL_SCAN_MINUTES", "25"))
 
 GOOGLE_CREDENTIALS_FILE = ROOT / os.getenv(
     "GOOGLE_CREDENTIALS_FILE",

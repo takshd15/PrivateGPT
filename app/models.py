@@ -55,3 +55,119 @@ class EventCandidate(BaseModel):
     def is_timed(self) -> bool:
         """True when this candidate should become a timed Calendar event."""
         return bool(self.date and self.start_time and not self.all_day)
+
+
+class TaskCandidate(BaseModel):
+    """A single task extracted from a REMEMBER/REMIND utterance."""
+
+    title: str = ""
+    details: str = ""
+    due_date_phrase: Optional[str] = None   # raw spoken phrase; app/tools/live_info.py resolves it
+    priority: int = 0                        # 0-3
+    entity_name: Optional[str] = None
+    domain: Optional[str] = None
+    confidence: float = 0.0
+
+
+class ProjectCandidate(BaseModel):
+    """A new project extracted from a NEW_PROJECT description."""
+
+    name: str = ""
+    description: str = ""
+    status: str = "active"
+    confidence: float = 0.0
+
+
+PROGRESS_EVENT_TYPES = {"update", "blocker", "milestone", "decision"}
+
+
+class ProgressEventCandidate(BaseModel):
+    """A single progress-log entry extracted from a LOG_PROGRESS utterance."""
+
+    entity_name: str = ""
+    domain: Optional[str] = None
+    event_text: str = ""
+    event_type: str = "update"               # one of PROGRESS_EVENT_TYPES
+    event_date_phrase: Optional[str] = None  # raw spoken phrase; live_info.py resolves it
+    confidence: float = 0.0
+
+
+class OpportunityCandidate(BaseModel):
+    """A single opportunity extracted from web search results (FIND_OPPORTUNITIES)."""
+
+    name: str = ""
+    type: str = ""                       # job/grant/competition/scholarship/hackathon/etc.
+    url: str = ""
+    deadline: Optional[str] = None       # free text - matches the real opportunities.deadline column type
+    fit_score: float = 0.0               # 0.0-1.0
+    reason: str = ""
+    next_action: str = ""
+
+
+class EmailSignupCandidate(BaseModel):
+    """An event/webinar/course signup detected in one email. Null fields when absent."""
+
+    name: str = ""
+    event_type: str = ""                 # webinar/course/meetup/event/etc.
+    date_phrase: Optional[str] = None
+    location: Optional[str] = None
+    confirmation_details: str = ""
+
+
+class EmailApplicationCandidate(BaseModel):
+    """A job/program application signal detected in one email. Status stays
+    free text to match the varied vocabulary already in the applications
+    table (e.g. 'aspirational', 'needs_context') rather than a fixed enum."""
+
+    company_name: str = ""
+    program: str = ""
+    status: str = ""
+    deadline_phrase: Optional[str] = None
+    contact_name: Optional[str] = None
+    contact_email: Optional[str] = None
+
+
+class EmailSignalCandidate(BaseModel):
+    """Combined single-LLM-call extraction over one email: both a possible
+    signup and a possible application signal, either or both null when the
+    email doesn't indicate that kind of thing (most emails should be null -
+    precision over recall)."""
+
+    signup: Optional[EmailSignupCandidate] = None
+    application: Optional[EmailApplicationCandidate] = None
+
+
+class MeetingFollowupCandidate(BaseModel):
+    """A concise summary of a spoken meeting-discussion recap, for
+    meetings.notes and a linked memories row."""
+
+    summary: str = ""
+    confidence: float = 0.0
+
+
+class MemoryDetectionCandidate(BaseModel):
+    """A durable fact/preference/plan passively detected in ordinary
+    conversation. Empty content means nothing worth remembering was said."""
+
+    content: str = ""
+    domain: Optional[str] = None
+    importance: float = 0.0   # 0.0-1.0; caller only writes when this clears a threshold
+
+
+class GoalDetectionCandidate(BaseModel):
+    """A goal/objective passively detected in ordinary conversation, separate
+    from a plain fact. Empty title means no goal was stated."""
+
+    title: str = ""
+    description: str = ""
+    priority: int = 0   # 0 default, higher only if urgency is explicit
+
+
+class ConvoDetectionCandidate(BaseModel):
+    """Combined single-LLM-call passive detection over one conversational
+    exchange: both a possible durable memory and a possible goal, either or
+    both empty when nothing worth capturing was said (most exchanges should
+    be empty - this must not fire on every message)."""
+
+    memory: MemoryDetectionCandidate = Field(default_factory=MemoryDetectionCandidate)
+    goal: GoalDetectionCandidate = Field(default_factory=GoalDetectionCandidate)

@@ -56,6 +56,7 @@ def wake_loop(
     wait_for_wake: Callable[[], str | None] | None = None,
     announce: str = "Yes?",
     once: bool = False,
+    max_seconds_for_next_turn: Callable[[], float | None] | None = None,
 ) -> None:
     """Run the wake loop. ``wait_for_wake`` blocks until the user triggers Jarvix
     (defaults to the double-clap detector). Set ``once=True`` for a single command.
@@ -63,6 +64,12 @@ def wake_loop(
     After a command, Jarvix stays awake and keeps listening without the wake
     word for ``_AWAKE_IDLE_SECONDS`` since the last thing it heard. Say "sleep"
     to end that window immediately instead of waiting it out.
+
+    ``max_seconds_for_next_turn``, if given, is checked before every command
+    capture and can return a longer recording duration for that one turn (e.g.
+    dialogue.py mid-way through the new_project flow's "describe it" step,
+    which needs ~20s instead of the normal short command length). Return None
+    for the normal duration.
     """
     # Imported lazily so non-voice commands don't pay the import cost.
     from app.voice.recorder import record, MicUnavailable
@@ -78,8 +85,10 @@ def wake_loop(
         """One record+transcribe attempt. None = no speech started (silence);
         "" = audio captured but transcription failed; else the heard text."""
         warm()
+        override = max_seconds_for_next_turn() if max_seconds_for_next_turn else None
+        duration = float(override) if override else float(VOICE_RECORD_SECONDS)
         audio = record(
-            max_seconds=float(VOICE_RECORD_SECONDS),
+            max_seconds=duration,
             trailing_silence=1.1,
             start_timeout=start_timeout,
         )

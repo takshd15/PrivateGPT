@@ -16,5 +16,11 @@ google_credentials.json
 # Personal contact data (real emails). Ship contacts.example.json instead.
 app/memory/contacts.json
 
+# Background autopilot state (last-run times/counts, local debugging only)
+app/memory/autopilot_state.json
+
+# Last-briefing-time tracking (briefing rollup "since last time" cutoff)
+app/memory/brief_state.json
+
 # Background run log
 jarvix.log

@@ -42,6 +42,14 @@ TIME = "time"
 CALENDAR_DATE = "calendar_date"
 ADD_EVENT = "add_event"
 NEWS = "news"
+REMEMBER = "remember"
+NEW_PROJECT = "new_project"
+LOG_PROGRESS = "log_progress"
+FIND_OPPORTUNITIES = "find_opportunities"
+# Never parsed from user speech - only ever proactively armed by main.py's
+# briefing flow (dialogue.pending set directly), so it's intentionally absent
+# from _parse_rules/_coerce_llm_intent/the LLM prompt's intent list.
+MEETING_FOLLOWUP = "meeting_followup"
 CLARIFICATION_NEEDED = "clarification_needed"
 UNKNOWN = "unknown"
 
@@ -146,8 +154,9 @@ def _extract_music_query(text: str) -> str | None:
     return _MUSIC_CORRECTIONS.get(query.lower(), query) or None
 
 
-def _extract_weather_location(text: str) -> str | None:
-    """Best-effort location from phrases such as 'weather in Enschede today'."""
+def _extract_location_phrase(text: str) -> str | None:
+    """Best-effort location from phrases such as 'weather in Enschede today'
+    or 'opportunities in Berlin'. Shared by WEATHER and FIND_OPPORTUNITIES."""
     m = re.search(r"\b(?:in|for|at)\s+(.+)", text, re.I)
     if not m:
         return None
@@ -158,6 +167,20 @@ def _extract_weather_location(text: str) -> str | None:
         flags=re.I,
     )
     return location.strip(" ,.?!") or None
+
+
+def _extract_opportunity_location(text: str) -> str | None:
+    """Location from phrases like 'opportunities in Berlin' - anchored right
+    after 'opportunit(y/ies)' specifically, unlike the generic 'in/for/at X'
+    pattern, since "search FOR opportunities" and "opportunities... for me"
+    both contain a "for" that isn't introducing a location."""
+    m = re.search(r"\bopportunit\w*\s+(?:in|for|at|near)\s+(.+)", text, re.I)
+    if not m:
+        return None
+    location = m.group(1).strip(" ,.?!")
+    if not location or location.lower() in {"me", "myself", "us"}:
+        return None
+    return location
 
 
 def _extract_calendar_date(text: str) -> str | None:
@@ -195,6 +218,11 @@ def _parse_rules(text: str) -> Intent:
 
     folders = desktop.list_folders()
     apps = desktop.list_apps()
+
+    # 0. Opportunity search - must precede block 1's music "find "/"search for "
+    #    prefix match, which would otherwise swallow "find opportunities for me".
+    if "opportunit" in t and any(k in t for k in ("find", "search", "look")):
+        return Intent(FIND_OPPORTUNITIES, arg=_extract_opportunity_location(text), raw=text)
 
     # 1. Music commands are common in speech and should tolerate polite phrasing.
     if any(k in t for k in ("volume up", "louder", "turn it up", "turn up")):
@@ -260,6 +288,19 @@ def _parse_rules(text: str) -> Intent:
     ):
         return Intent(ADD_EVENT, raw=text)
 
+    # 3a. Remember / remind / don't-forget - must precede email drafting (block 4)
+    #     so "remind me to email my advisor" becomes a task, not a drafted email.
+    if any(k in t for k in ("remember", "remind me", "don't forget", "dont forget")):
+        return Intent(REMEMBER, raw=text)
+
+    # 3b. New project.
+    if "new project" in t or ("working on" in t and "project" in t):
+        return Intent(NEW_PROJECT, raw=text)
+
+    # 3c. Progress/update logging.
+    if any(k in t for k in ("log progress", "progress on", "update on")):
+        return Intent(LOG_PROGRESS, raw=text)
+
     # 4. Email drafting / sending (must come before plain email-reading).
     if ("email" in t or "mail" in t) and any(
         k in t for k in ("draft", "write", "compose", "send")
@@ -279,7 +320,7 @@ def _parse_rules(text: str) -> Intent:
 
     # 6. Live information. These must precede the broad "today" calendar rule.
     if "weather" in t or "forecast" in t or "temperature" in t:
-        return Intent(WEATHER, arg=_extract_weather_location(text), raw=text)
+        return Intent(WEATHER, arg=_extract_location_phrase(text), raw=text)
     if any(
         phrase in t
         for phrase in ("what time", "current time", "time is it", "tell me the time")
@@ -376,6 +417,10 @@ def _coerce_llm_intent(data: dict, raw: str) -> Intent:
         CALENDAR_DATE,
         ADD_EVENT,
         NEWS,
+        REMEMBER,
+        NEW_PROJECT,
+        LOG_PROGRESS,
+        FIND_OPPORTUNITIES,
         CLARIFICATION_NEEDED,
         UNKNOWN,
     }
@@ -434,6 +479,10 @@ Allowed intents:
 - {READ_EMAILS}: read or summarize Gmail/inbox messages.
 - {SCAN_MAIL}: check Gmail for calendar-worthy events/deadlines and add approved items to Calendar.
 - {ADD_EVENT}: create/add/schedule a brand-new calendar event the user is describing now (not extracted from email).
+- {REMEMBER}: remember/remind/don't-forget a task or reminder. Takes priority over drafting/sending an email even if the task mentions emailing someone - "remind me to email X" is a task, not an email to send.
+- {NEW_PROJECT}: the user says they're starting/working on a new project.
+- {LOG_PROGRESS}: log/give a progress update on an existing project, application, or opportunity.
+- {FIND_OPPORTUNITIES}: an explicit REQUEST to search/find opportunities right now (e.g. "find opportunities for me", "search for grants", "look for hackathons"). arg is the requested location, or null if not stated. A statement of wanting/trying to achieve something (e.g. "I want to get into grad school", "I'm trying to land an internship at X") is {CONVERSATION} or {QUESTION}, NOT this - the assistant should respond conversationally, not launch a search uninvited.
 - {TODAY}: summarize today's schedule/plan/tasks.
 - {CALENDAR_DATE}: calendar/schedule for a day other than today. arg is the spoken date phrase.
 - {BRIEF}: brief/catch up/good morning.
@@ -452,6 +501,7 @@ Safety:
 - Use {SCAN_MAIL} only when the command asks to find/add calendar events from email.
 - Use {READ_EMAILS} when the command only asks to read/check/summarize email.
 - Use {ADD_EVENT} only when the user is directly describing a new event to create, not asking to read/check the calendar.
+- Use {REMEMBER} whenever the trigger word is "remember"/"remind me"/"don't forget", regardless of what the reminder is about.
 - Use {CLARIFICATION_NEEDED} for fragments like "can you please", "by calendar", "and you", or nonsense - not for legitimate questions that simply have no dedicated tool.
 """
     user_prompt = f"Command: {text}"

@@ -1,4 +1,5 @@
 import html
+import json
 import re
 import threading
 
@@ -34,8 +35,19 @@ from app.tools import live_info
 from app.tools import summarize
 from app.tools import news as news_tool
 from app.memory import db
-from app.brain import intent_router
+from app.memory.db import progress_events as db_progress_events
+from app.memory.db import projects as db_projects
+from app.memory.db import tasks as db_tasks
+from app.memory.db import opportunities as db_opportunities
+from app.memory.db import goals as db_goals
+from app.memory.db import memories as db_memories
+from app.memory.db import meetings as db_meetings
+from app.memory.db import applications as db_applications
+from app.memory.db import events as db_events
+from app.brain import intent_router, structuring
 from app.brain.voice_assistant import answer_spoken
+from app.tools import websearch
+from app.runtime import scheduler
 from app.config import (
     USER_DISPLAY_NAME,
     JARVIX_GREETING,
@@ -45,6 +57,8 @@ from app.config import (
     AUTO_MUSIC_QUERY_ON_WAKE,
     AUTO_MUSIC_URI_ON_WAKE,
     TIMEZONE,
+    USER_ID,
+    ROOT,
 )
 
 app = typer.Typer(help="Jarvix v0 - local AI assistant for Gmail + Calendar.")
@@ -122,7 +136,39 @@ def _looks_like_clear_question(text: str) -> bool:
     return t.startswith(starters) or "?" in t
 
 
-_last_memory_log_thread: threading.Thread | None = None
+_last_background_threads: list[threading.Thread] = []
+
+
+def _detect_memory_and_goal(transcript: str, response: str) -> None:
+    """Passive, silent detection of a durable memory and/or goal from one
+    conversational exchange. Never speaks, never confirms - matches the
+    spec's explicit 'passive capture is silent by design.' Wrapped broadly so
+    a detection failure never surfaces anywhere but the console.
+    """
+    if not USER_ID:
+        return
+    try:
+        detection = structuring.detect_memory_and_goal(transcript, response)
+        if detection.memory.content.strip() and detection.memory.importance > 0.4:
+            db_memories.insert_memory(
+                USER_ID,
+                content=detection.memory.content,
+                domain=detection.memory.domain,
+                importance=detection.memory.importance,
+                source="auto-convo",
+            )
+        if detection.goal.title.strip():
+            existing = db_goals.find_similar_goal(USER_ID, detection.goal.title)
+            if not existing:
+                db_goals.insert_goal(
+                    USER_ID,
+                    title=detection.goal.title,
+                    description=detection.goal.description,
+                    priority=detection.goal.priority,
+                    source="auto-goal",
+                )
+    except Exception as exc:
+        console.print(f"[yellow]Passive detection skipped: {exc}[/yellow]")
 
 
 def run_intent(intent: intent_router.Intent) -> str:
@@ -133,9 +179,15 @@ def run_intent(intent: intent_router.Intent) -> str:
     welcome-routine music thread below). The wake loop stays alive long
     enough for this to finish naturally; short-lived CLI commands (route)
     join it briefly before the process exits so logging isn't silently lost.
+
+    Passive memory/goal detection runs on a SEPARATE background thread, only
+    for QUESTION/CONVERSATION intents - kept decoupled from RAG interaction
+    logging (which fires for every intent) since they're different features
+    over different tables.
     """
-    global _last_memory_log_thread
+    global _last_background_threads
     response = _dispatch_intent(intent)
+    _last_background_threads = []
     if (intent.raw or "").strip():
         thread = threading.Thread(
             target=db.log_interaction,
@@ -144,7 +196,16 @@ def run_intent(intent: intent_router.Intent) -> str:
             daemon=True,
         )
         thread.start()
-        _last_memory_log_thread = thread
+        _last_background_threads.append(thread)
+        if intent.name in (intent_router.QUESTION, intent_router.CONVERSATION):
+            detect_thread = threading.Thread(
+                target=_detect_memory_and_goal,
+                args=(intent.raw, response),
+                name="jarvix-passive-detect",
+                daemon=True,
+            )
+            detect_thread.start()
+            _last_background_threads.append(detect_thread)
     return response
 
 
@@ -167,6 +228,16 @@ def _dispatch_intent(intent: intent_router.Intent) -> str:
         return _calendar_date_text(intent.arg)
     if intent.name == intent_router.ADD_EVENT:
         return _add_event_text(intent.values or {})
+    if intent.name == intent_router.REMEMBER:
+        return _remember_text(intent.values or {})
+    if intent.name == intent_router.NEW_PROJECT:
+        return _new_project_text(intent.values or {})
+    if intent.name == intent_router.LOG_PROGRESS:
+        return _log_progress_text(intent.values or {})
+    if intent.name == intent_router.FIND_OPPORTUNITIES:
+        return _find_opportunities_text(intent.arg)
+    if intent.name == intent_router.MEETING_FOLLOWUP:
+        return _meeting_followup_text(intent.values or {})
     if intent.name == intent_router.TIME:
         return live_info.spoken_time()
     if intent.name == intent_router.WEATHER:
@@ -301,7 +372,37 @@ def _spoken_event_time(event: dict) -> str:
 def _todays_events(limit: int = 12) -> list[dict]:
     today = _local_now().date()
     events = get_upcoming_events(days=2, limit=limit)
+    _sync_meetings(events)
     return [event for event in events if _event_local_date(event) == today]
+
+
+def _sync_meetings(events: list[dict]) -> None:
+    """Passively upsert timed calendar events into meetings. No confirmation
+    needed - this is a read-through sync, not a write the user asked for.
+    All-day events are skipped (no meaningful starts_at/ends_at for the
+    follow-up cadence). Wrapped so a sync failure never breaks calendar
+    reading - the existing spoken-text logic must run regardless."""
+    if not USER_ID:
+        return
+    try:
+        for event in events:
+            start = event.get("start") or ""
+            end = event.get("end") or ""
+            if "T" not in start:  # all-day event, no start/end time to sync
+                continue
+            gcal_id = event.get("id") or ""
+            if not gcal_id:
+                continue
+            db_meetings.upsert_meeting(
+                USER_ID,
+                title=event.get("summary") or "Untitled",
+                location=event.get("location") or None,
+                starts_at=start,
+                ends_at=end or start,
+                gcal_event_id=gcal_id,
+            )
+    except Exception as exc:
+        console.print(f"[yellow]Meeting sync skipped: {exc}[/yellow]")
 
 
 def _calendar_brief_text(include_startup_actions: bool = False) -> str:
@@ -314,6 +415,7 @@ def _calendar_tasks_text(include_startup_actions: bool = False) -> str:
     """Fast deterministic calendar-only task summary without the greeting."""
     console.print("[bold cyan]Reading calendar...[/bold cyan]")
     events = get_upcoming_events(days=1, limit=8)
+    _sync_meetings(events)
 
     if events:
         items = []
@@ -345,6 +447,7 @@ def _calendar_date_text(date_phrase: str | None) -> str:
 
     console.print(f"[bold cyan]Reading calendar for {day.isoformat()}...[/bold cyan]")
     events = get_events_for_date(day, limit=12)
+    _sync_meetings(events)
     label = day.strftime("%A, %B %d").replace(" 0", " ")
     if not events:
         return f"Your calendar is clear on {label}."
@@ -389,6 +492,219 @@ def _add_event_text(values: dict) -> str:
     except Exception as exc:
         console.print(f"[red]Failed to add event:[/red] {exc}")
         return f"Sorry, I couldn't add that event: {exc}"
+
+
+def known_project_names() -> list[str]:
+    """Project names for the current user, used by LOG_PROGRESS entity matching.
+
+    Passed into VoiceDialogue as a callback (see `wake`/`route`) so app/brain/
+    never imports app.memory.db directly - main.py owns that boundary.
+    """
+    if not USER_ID:
+        return []
+    return [p["name"] for p in db_projects.list_projects(USER_ID)]
+
+
+def _remember_text(values: dict) -> str:
+    """Insert a task from the details collected by VoiceDialogue.
+
+    The spoken/typed 'yes' that reaches this function (remember_confirm state
+    in dialogue.py) IS the confirmation gate - there is no second, blocking
+    terminal prompt.
+    """
+    title = (values.get("title") or "").strip()
+    if not title:
+        return "I didn't get enough details to remember that."
+    if not USER_ID:
+        return "I can't save that - USER_ID isn't configured."
+
+    try:
+        task_id = db_tasks.insert_task(
+            USER_ID,
+            title=title,
+            details=values.get("details") or "",
+            due_date=values.get("due_date"),
+            priority=int(values.get("priority") or 0),
+            entity_name=values.get("entity_name"),
+            domain=values.get("domain"),
+        )
+        if task_id is None:
+            return "Sorry, I couldn't save that."
+        console.print(f"[green]Remembered:[/green] {title}")
+        return f"Got it, I'll remember: {title}."
+    except Exception as exc:
+        console.print(f"[red]Failed to remember task:[/red] {exc}")
+        return f"Sorry, I couldn't save that: {exc}"
+
+
+def _new_project_text(values: dict) -> str:
+    """Insert a project from the details collected by VoiceDialogue.
+
+    The spoken/typed 'yes' that reaches this function (project_confirm state
+    in dialogue.py) IS the confirmation gate - there is no second, blocking
+    terminal prompt.
+    """
+    name = (values.get("name") or "").strip()
+    if not name:
+        return "I didn't get a project name to save."
+    if not USER_ID:
+        return "I can't save that - USER_ID isn't configured."
+
+    try:
+        project_id = db_projects.insert_project(
+            USER_ID,
+            name=name,
+            description=values.get("description") or "",
+            status=values.get("status") or "active",
+        )
+        if project_id is None:
+            return "Sorry, I couldn't save that project."
+        console.print(f"[green]Saved project:[/green] {name}")
+        return f"Saved the project: {name}."
+    except Exception as exc:
+        console.print(f"[red]Failed to save project:[/red] {exc}")
+        return f"Sorry, I couldn't save that project: {exc}"
+
+
+def _log_progress_text(values: dict) -> str:
+    """Insert a progress event from the details collected by VoiceDialogue.
+
+    The spoken/typed 'yes' that reaches this function (progress_confirm state
+    in dialogue.py) IS the confirmation gate - there is no second, blocking
+    terminal prompt.
+    """
+    entity_name = (values.get("entity_name") or "").strip()
+    event_text = (values.get("event_text") or "").strip()
+    if not entity_name or not event_text:
+        return "I didn't get enough details to log that."
+    if not USER_ID:
+        return "I can't save that - USER_ID isn't configured."
+
+    try:
+        event_id = db_progress_events.insert_progress_event(
+            USER_ID,
+            entity_name=entity_name,
+            event_text=event_text,
+            event_type=values.get("event_type") or "update",
+            event_date=values.get("event_date"),
+        )
+        if event_id is None:
+            return "Sorry, I couldn't log that."
+        console.print(f"[green]Logged progress:[/green] {entity_name}: {event_text}")
+        return f"Logged progress on {entity_name}."
+    except Exception as exc:
+        console.print(f"[red]Failed to log progress:[/red] {exc}")
+        return f"Sorry, I couldn't log that: {exc}"
+
+
+def _meeting_followup_text(values: dict) -> str:
+    """Handle a meeting-followup dialogue outcome: permanent decline, or
+    capture + save the discussion recap. The spoken yes/no that reaches this
+    function (dialogue.py's meeting_followup_offer/capture states) IS the
+    confirmation gate - there is no second, blocking terminal prompt.
+    """
+    meeting_id = values.get("meeting_id")
+    if not meeting_id:
+        return ""
+
+    if values.get("declined"):
+        db_meetings.mark_followup_status(meeting_id, "declined")
+        return "Okay, I won't ask about that one again."
+
+    title = values.get("title") or "that meeting"
+    summary = (values.get("summary") or "").strip()
+    if not summary:
+        return "I didn't catch enough to log that."
+    if not USER_ID:
+        return "I can't save that - USER_ID isn't configured."
+
+    try:
+        db_meetings.append_meeting_notes(meeting_id, summary)
+        db_memories.insert_memory(
+            USER_ID,
+            content=summary,
+            kind="progress",
+            entity_name=title,
+            source="meeting-followup",
+        )
+        db_meetings.mark_followup_status(meeting_id, "done")
+        console.print(f"[green]Logged meeting follow-up:[/green] {title}: {summary}")
+        return "Got it. Want me to email them, or should I remind you to follow up again later?"
+    except Exception as exc:
+        console.print(f"[red]Failed to log meeting follow-up:[/red] {exc}")
+        return f"Sorry, I couldn't save that: {exc}"
+
+
+def _profile_snippet() -> str:
+    """Short goals+memories context for opportunity-search personalization.
+    Empty string if the user has neither yet - structuring.py's prompt
+    already falls back to general relevance scoring in that case."""
+    if not USER_ID:
+        return ""
+    lines = []
+    for g in db_goals.list_goals(USER_ID, limit=8):
+        lines.append(f"Goal: {g['title']} (priority {g['priority']})")
+    for m in db_memories.list_recent_memories(USER_ID, limit=8):
+        lines.append(f"{m['kind']}: {m['content']}")
+    return "\n".join(lines)
+
+
+def _find_opportunities_text(location: str | None) -> str:
+    """Search the web for opportunities, extract structured candidates, and
+    insert ALL of them (status='found') - no confirmation needed, this is
+    read-only relative to the user's other data (per the spec)."""
+    if not USER_ID:
+        return "I can't search for opportunities - USER_ID isn't configured."
+
+    console.print("[bold cyan]Searching for opportunities...[/bold cyan]")
+    profile = _profile_snippet()
+    today = live_info.local_now().strftime("%Y-%m-%d")
+    location_text = location.strip() if location else ""
+    query_parts = ["opportunities hackathons grants scholarships accelerators jobs"]
+    if location_text:
+        query_parts.append(f"in {location_text}")
+    if profile:
+        goal_titles = [line.split(":", 1)[-1].strip() for line in profile.splitlines() if line.startswith("Goal:")]
+        if goal_titles:
+            query_parts.append("relevant to: " + "; ".join(goal_titles[:3]))
+    query = " ".join(query_parts)
+
+    try:
+        results = websearch.search(query, num_results=8)
+    except websearch.WebSearchError as exc:
+        return str(exc)
+    except Exception as exc:
+        return f"Sorry, I couldn't reach the search service: {exc}"
+
+    if not results:
+        return "I didn't find any opportunities right now."
+
+    console.print("[bold cyan]Extracting candidates with OpenAI...[/bold cyan]")
+    candidates = structuring.structure_opportunities(results, profile, today)
+    if not candidates:
+        return "I didn't find any concrete opportunities worth adding right now."
+
+    inserted = 0
+    for c in candidates:
+        opp_id = db_opportunities.insert_opportunity(
+            USER_ID,
+            name=c.name,
+            type_=c.type,
+            url=c.url,
+            deadline=c.deadline,
+            fit_score=c.fit_score,
+            reason=c.reason,
+            next_action=c.next_action,
+            source="exa",
+            raw=c.model_dump(),
+        )
+        if opp_id:
+            inserted += 1
+
+    top = sorted(candidates, key=lambda c: c.fit_score, reverse=True)[:5]
+    console.print(f"[green]Found {len(candidates)}, saved {inserted}.[/green]")
+    lines = [f"{i}. {c.name} ({c.type}) - {c.reason}" for i, c in enumerate(top, start=1)]
+    return f"I found {len(candidates)} opportunities and saved them. Top picks:\n" + "\n".join(lines)
 
 
 _NUMBER_WORDS = {
@@ -577,8 +893,15 @@ def run_welcome() -> str:
     return _calendar_brief_text(include_startup_actions=True)
 
 
-def _speak_welcome() -> str:
-    """Speak greeting first, then start Spotify while reading the calendar."""
+def _speak_welcome() -> dict | None:
+    """Speak greeting first, then start Spotify while reading the calendar.
+
+    Appends the "since last brief" rollup and a one-at-a-time meeting
+    follow-up offer to the spoken calendar details, matching `brief`'s
+    output. Returns the pending-followup candidate dict (or None) so the
+    caller can arm dialogue.pending for the next turn - this function only
+    speaks, it doesn't touch dialogue state (main.py owns that boundary).
+    """
     _open_welcome_workspace()
     greeting = f"{JARVIX_GREETING}, {USER_DISPLAY_NAME}."
     console.print(f"\n[bold green]Jarvix:[/bold green]\n{greeting}")
@@ -588,9 +911,13 @@ def _speak_welcome() -> str:
     music_thread.start()
 
     details = _calendar_tasks_text(include_startup_actions=True)
+    details += _briefing_rollup_text()
+    meeting = _pending_meeting_followup()
+    if meeting:
+        details += f" Also, want a follow-up on {meeting['title']} from last week?"
     console.print(details)
     speak(details)
-    return f"{greeting} {details}"
+    return meeting
 
 
 @app.command()
@@ -651,15 +978,33 @@ def say(text: str = typer.Argument("Jarvix voice test.")):
 
 @app.command()
 def route(text: str = typer.Argument(..., help="Command text to route, e.g. 'open cursor'.")):
-    """Parse a text command, show the matched intent, and execute it."""
-    intent = intent_router.parse(text)
-    console.print(f"[dim]intent={intent.name} arg={intent.arg}[/dim]")
-    response = run_intent(intent)
-    console.print(f"[green]{response}[/green]")
+    """Parse a text command and drive it through VoiceDialogue, typing y/n for any follow-ups.
+
+    Single-shot intents (already-complete commands) resolve immediately just
+    like before. Multi-turn intents (add_event, remember, new_project,
+    log_progress, email drafting, weather-with-no-city, ...) now actually work
+    here too, instead of only under `wake` - this is the offline/no-mic test
+    path for every dialogue.py flow.
+    """
+    from app.brain.dialogue import VoiceDialogue
+
+    dialogue = VoiceDialogue(known_entities=known_project_names)
+
+    def execute(intent: intent_router.Intent) -> str:
+        console.print(f"[dim]intent={intent.name} arg={intent.arg}[/dim]")
+        return run_intent(intent)
+
+    reply = dialogue.handle(text, execute)
+    while dialogue.pending is not None:
+        console.print(f"[green]Jarvix:[/green] {reply}")
+        line = input("> ").strip()
+        reply = dialogue.handle(line, execute)
+    console.print(f"[green]{reply}[/green]")
     # This one-shot CLI command exits right after printing; give the
-    # background memory-log thread a moment to finish instead of losing it.
-    if _last_memory_log_thread is not None:
-        _last_memory_log_thread.join(timeout=10)
+    # background memory-log/passive-detection threads a moment to finish
+    # instead of losing them.
+    for bg_thread in _last_background_threads:
+        bg_thread.join(timeout=10)
 
 
 # --------------------------------------------------------------------------- #
@@ -850,7 +1195,7 @@ def wake(
         trigger_hint = f'Say "hey {WAKE_WORD}" to talk.'
 
     from app.brain.dialogue import VoiceDialogue
-    dialogue = VoiceDialogue()
+    dialogue = VoiceDialogue(known_entities=known_project_names)
 
     def execute_voice_intent(intent: intent_router.Intent) -> str:
         console.print(f"[dim]intent={intent.name} arg={intent.arg}[/dim]")
@@ -859,18 +1204,72 @@ def wake(
     def handle(text: str) -> str:
         return dialogue.handle(text, execute_voice_intent)
 
+    def next_turn_max_seconds() -> float | None:
+        # The new_project flow's "describe it" step needs a long-form answer,
+        # not a short command clip - everything else uses the normal length.
+        if dialogue.pending is not None and dialogue.pending.kind == "project_describe":
+            return 20.0
+        return None
+
+    try:
+        scheduler.start(USER_ID)
+    except Exception as exc:
+        console.print(f"[yellow]Autopilot scheduler failed to start: {exc}[/yellow]")
+
     console.print(f"[bold cyan]Jarvix is awake ({wake_mode} mode). {trigger_hint} Ctrl+C to stop.[/bold cyan]")
     try:
         if with_welcome:
             console.print(f"[cyan]{trigger_hint} to start your day...[/cyan]")
             wait_for_wake()
-            _speak_welcome()
-        wake_loop(handle, speak, wait_for_wake=wait_for_wake, announce="")
+            pending_meeting = _speak_welcome()
+            if pending_meeting:
+                from app.brain.dialogue import Pending
+
+                dialogue.pending = Pending(
+                    "meeting_followup_offer",
+                    {"meeting_id": pending_meeting["id"], "title": pending_meeting["title"]},
+                )
+        wake_loop(
+            handle,
+            speak,
+            wait_for_wake=wait_for_wake,
+            announce="",
+            max_seconds_for_next_turn=next_turn_max_seconds,
+        )
     except MicUnavailable as exc:
         console.print(f"[red]Microphone unavailable: {exc}. Jarvix can't run the wake loop.[/red]")
         raise typer.Exit(code=1)
     except KeyboardInterrupt:
         console.print("\n[yellow]Jarvix going to sleep.[/yellow]")
+
+
+@app.command()
+def autopilot_status():
+    """Print last-run time and item counts for each background autopilot job."""
+    state = scheduler.read_state()
+    if not state:
+        console.print("[yellow]No autopilot jobs have run yet.[/yellow]")
+        return
+    for job_name, info in state.items():
+        console.print(f"\n[bold green]{job_name}[/bold green]")
+        for key, value in info.items():
+            console.print(f"  {key}: {value}")
+
+
+@app.command()
+def autopilot_run(
+    job: str = typer.Argument(..., help="Job to run now: email-scan."),
+):
+    """Manually run one autopilot job immediately (bypasses its interval) - for testing."""
+    if not USER_ID:
+        console.print("[red]USER_ID isn't configured.[/red]")
+        raise typer.Exit(code=1)
+    try:
+        result = scheduler.run_job_now(job, USER_ID)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1)
+    console.print(f"[green]{job} finished:[/green] {result}")
 
 
 @app.command()
@@ -1045,9 +1444,102 @@ def play(song: str = typer.Argument(..., help="Song or artist to search and play
         raise typer.Exit(code=1)
 
 
+_BRIEF_STATE_FILE = ROOT / "app" / "memory" / "brief_state.json"
+
+
+def _read_last_brief_at() -> str:
+    """ISO timestamp of the last briefing, or 7 days ago on first run/failure."""
+    try:
+        if _BRIEF_STATE_FILE.exists():
+            state = json.loads(_BRIEF_STATE_FILE.read_text(encoding="utf-8"))
+            if state.get("last_brief_at"):
+                return state["last_brief_at"]
+    except Exception:
+        pass
+    return (datetime.now(ZoneInfo("UTC")) - timedelta(days=7)).isoformat()
+
+
+def _write_last_brief_at() -> None:
+    try:
+        _BRIEF_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _BRIEF_STATE_FILE.write_text(
+            json.dumps({"last_brief_at": datetime.now(ZoneInfo("UTC")).isoformat()}, indent=2),
+            encoding="utf-8",
+        )
+    except Exception as exc:
+        console.print(f"[yellow]Couldn't save brief state: {exc}[/yellow]")
+
+
+def _briefing_rollup_text() -> str:
+    """A short ' Since we last talked, ...' sentence covering what's new
+    since the last briefing, or '' if there's nothing worth mentioning.
+    Writes the new last-brief-time as a side effect - callers should only
+    call this once per actual briefing (not for exploratory/test calls).
+    """
+    if not USER_ID:
+        return ""
+    since = _read_last_brief_at()
+    try:
+        new_opportunities = [
+            {"name": o["name"], "fit_score": o["fit_score"]}
+            for o in db_opportunities.list_recent_opportunities(USER_ID, limit=20)
+            if str(o.get("created_at") or "") >= since
+        ]
+        new_applications = db_applications.list_updated_since(USER_ID, since)
+        new_events = db_events.count_events_since(USER_ID, since)
+        pending_followups = len(db_meetings.list_followup_candidates(USER_ID))
+        high_importance_memories = [
+            m["content"] for m in db_memories.list_recent_memories(USER_ID, limit=20)
+            if m.get("importance", 0) > 0.6 and str(m.get("created_at") or "") >= since
+        ]
+        high_importance_goals = [
+            g["title"] for g in db_goals.list_goals(USER_ID, limit=20)
+            if str(g.get("created_at") or "") >= since
+        ]
+        sources = {
+            "new_opportunities": new_opportunities,
+            "new_applications_updated": new_applications,
+            "new_autopilot_events": new_events,
+            "pending_meeting_followups": pending_followups,
+            "high_importance_memories": high_importance_memories,
+            "high_importance_goals": high_importance_goals,
+        }
+        has_anything = any(
+            [new_opportunities, new_applications, new_events, pending_followups,
+             high_importance_memories, high_importance_goals]
+        )
+        summary = structuring.summarize_briefing_rollup(sources) if has_anything else ""
+    except Exception as exc:
+        console.print(f"[yellow]Briefing rollup skipped: {exc}[/yellow]")
+        summary = ""
+    finally:
+        _write_last_brief_at()
+    return f" {summary}" if summary else ""
+
+
+def _pending_meeting_followup() -> dict | None:
+    """The single oldest meeting due for a follow-up ask, or None. Asked
+    about one at a time, not all at once."""
+    if not USER_ID:
+        return None
+    candidates = db_meetings.list_followup_candidates(USER_ID)
+    return candidates[0] if candidates else None
+
+
 def _brief_text() -> str:
-    """Build the short spoken daily briefing text without reading Gmail."""
-    return _calendar_brief_text()
+    """Build the short spoken daily briefing text without reading Gmail.
+
+    Appends, when applicable: a "since last brief" rollup and a one-at-a-time
+    meeting follow-up offer. The caller (wake command) is responsible for
+    arming dialogue.pending so the next spoken turn catches the follow-up
+    answer - this function only builds text, it doesn't touch dialogue state.
+    """
+    text = _calendar_brief_text()
+    text += _briefing_rollup_text()
+    meeting = _pending_meeting_followup()
+    if meeting:
+        text += f" Also, want a follow-up on {meeting['title']} from last week?"
+    return text
 
 
 @app.command()

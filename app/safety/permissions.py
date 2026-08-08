@@ -7,6 +7,13 @@ DANGEROUS_ACTIONS = {
     "move_file",
     "delete_file",
     "run_terminal_command",
+    # Structured-capture writes (app/brain/structuring.py + dialogue.py). Listed
+    # here as an audit marker only - confirmation for these is always the
+    # spoken/typed "yes" in dialogue.py's *_confirm states, never a second
+    # blocking permissions.confirm() prompt (same as create_calendar_event).
+    "remember_task",
+    "new_project",
+    "log_progress_event",
 }
 
 

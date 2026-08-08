@@ -51,6 +51,7 @@ def get_recent_emails(limit: int = 10, days: int = 7) -> list[dict]:
         emails.append(
             {
                 "id": full["id"],
+                "thread_id": full.get("threadId", ""),
                 "from": header_map.get("from", ""),
                 "subject": header_map.get("subject", ""),
                 "date": header_map.get("date", ""),
