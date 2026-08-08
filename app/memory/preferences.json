@@ -1,0 +1,9 @@
+{
+  "tts_rate": 175,
+  "briefing_max_sentences": 4,
+  "scan_days_back": 10,
+  "scan_email_limit": 12,
+  "default_music_query": "",
+  "confirm_before_calendar_write": true,
+  "confirm_before_email_send": true
+}

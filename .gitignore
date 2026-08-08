@@ -1,0 +1,20 @@
+.venv/
+__pycache__/
+*.pyc
+
+# Local cache (contains private email extraction data)
+*.sqlite
+*.sqlite3
+jarvix_cache.sqlite
+
+.env
+secrets/
+token*.json
+google_token.json
+google_credentials.json
+
+# Personal contact data (real emails). Ship contacts.example.json instead.
+app/memory/contacts.json
+
+# Background run log
+jarvix.log
