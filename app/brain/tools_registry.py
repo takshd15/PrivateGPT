@@ -420,7 +420,15 @@ TOOLS: list[ToolSpec] = [
             "properties": {
                 "instruction": {
                     "type": "string",
-                    "description": "The full task to perform in the browser, in plain language, including any details already known (site, dates, destination, recipient, search terms, etc).",
+                    "description": (
+                        "The COMPLETE task, in plain language, exactly as the user asked - not just the "
+                        "navigation step. If the user asked to open/go to a site AND then do or report "
+                        "something (e.g. 'open X and tell me Y', 'open X and check if Z', 'open X and click "
+                        "on Y'), the instruction MUST include that second part verbatim - never shorten a "
+                        "multi-part request down to only 'open <site>', or the browser agent has no way to "
+                        "know it needs to keep going after the page loads. Include any other known details too "
+                        "(dates, destination, recipient, search terms, etc)."
+                    ),
                 }
             },
             "required": ["instruction"],

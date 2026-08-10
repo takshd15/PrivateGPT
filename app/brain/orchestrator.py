@@ -170,6 +170,13 @@ Rules:
   the user wants the thing you just found, not a fresh, possibly different
   search. Only fall back to a generic search instruction when the data tool
   genuinely returned nothing usable (no URL) for what they're asking about.
+- When the user's request has a SECOND half after the site/navigation part
+  ("open X and tell me Y", "open X and check whether Z", "open X and click
+  on Y", "go to X and read me the top result"), browser_task's instruction
+  must carry that second half verbatim - never collapse it down to just
+  "open X". The browser agent only knows what's in the instruction text; if
+  you drop the "and tell me Y" part, it stops after loading the page and the
+  user never gets an answer to what they actually asked for.
 - HARD LIMIT: every final answer is at most 2 short spoken sentences (about
   40 words total), unless the user's own wording explicitly asked for detail
   (e.g. "list them all", "give me details", "tell me more", "the full
