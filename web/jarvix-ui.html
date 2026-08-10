@@ -1,0 +1,2005 @@
+<title>JARVIX — Personal AI System</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+
+<style>
+/* ============================================================
+   TOKENS
+   ============================================================ */
+:root {
+  --void: #f5f2ee;
+  --void-2: #ece7df;
+  --panel: rgba(20, 14, 6, 0.04);
+  --panel-border: rgba(120, 70, 20, 0.18);
+  --ember: #c96a1f;
+  --gold: #9a5c14;
+  --amber-dim: #b98a52;
+  --text-hi: #241a0e;
+  --text-lo: #6b5a45;
+  --white-hot: #fff4e4;
+  --glow-a: rgba(201, 106, 31, 0.35);
+  --glow-b: rgba(255, 200, 120, 0.18);
+  --danger: #c94a3a;
+  --ok: #3a8a5c;
+
+  --font-mono: 'JB Mono', ui-monospace, 'SF Mono', 'Cascadia Code', Consolas, monospace;
+  --font-sans: 'Sora', -apple-system, 'Segoe UI', system-ui, sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --void: #060402;
+    --void-2: #0b0704;
+    --panel: rgba(255, 170, 90, 0.045);
+    --panel-border: rgba(255, 170, 90, 0.16);
+    --ember: #ff9430;
+    --gold: #ffc978;
+    --amber-dim: #7a4e22;
+    --text-hi: #fbead4;
+    --text-lo: #a9895f;
+    --white-hot: #fff4e4;
+    --glow-a: rgba(255, 148, 48, 0.45);
+    --glow-b: rgba(255, 200, 120, 0.16);
+    --danger: #ff5b46;
+    --ok: #5fce93;
+  }
+}
+:root[data-theme="dark"] {
+  --void: #060402;
+  --void-2: #0b0704;
+  --panel: rgba(255, 170, 90, 0.045);
+  --panel-border: rgba(255, 170, 90, 0.16);
+  --ember: #ff9430;
+  --gold: #ffc978;
+  --amber-dim: #7a4e22;
+  --text-hi: #fbead4;
+  --text-lo: #a9895f;
+  --white-hot: #fff4e4;
+  --glow-a: rgba(255, 148, 48, 0.45);
+  --glow-b: rgba(255, 200, 120, 0.16);
+  --danger: #ff5b46;
+  --ok: #5fce93;
+}
+
+/* ============================================================
+   FONT — inline geometric mono + sans fallback stacks
+   (CSP blocks font CDNs; tuned system stacks stand in cleanly)
+   ============================================================ */
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+
+body {
+  background: var(--void);
+  color: var(--text-hi);
+  font-family: var(--font-sans);
+  overflow: hidden;
+  height: 100vh;
+  width: 100vw;
+  position: relative;
+  -webkit-font-smoothing: antialiased;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ============================================================
+   BACKGROUND FIELD
+   ============================================================ */
+.bg-field {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  background:
+    radial-gradient(ellipse 900px 700px at 50% 46%, var(--glow-b), transparent 60%),
+    radial-gradient(ellipse 1400px 900px at 50% 100%, rgba(120,70,20,0.06), transparent 70%),
+    var(--void);
+  pointer-events: none;
+}
+.bg-grid {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  opacity: 0.35;
+  background-image:
+    linear-gradient(var(--panel-border) 1px, transparent 1px),
+    linear-gradient(90deg, var(--panel-border) 1px, transparent 1px);
+  background-size: 64px 64px;
+  mask-image: radial-gradient(ellipse 70% 60% at 50% 45%, black 0%, transparent 75%);
+  -webkit-mask-image: radial-gradient(ellipse 70% 60% at 50% 45%, black 0%, transparent 75%);
+  pointer-events: none;
+}
+.scanline {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    to bottom,
+    transparent 0px,
+    transparent 2px,
+    rgba(0,0,0,0.012) 3px,
+    transparent 4px
+  );
+  mix-blend-mode: multiply;
+  opacity: 0.5;
+}
+:root:not([data-theme="light"]) .scanline { mix-blend-mode: screen; opacity: 0.25; }
+:root[data-theme="dark"] .scanline { mix-blend-mode: screen; opacity: 0.25; }
+
+.app {
+  position: relative;
+  z-index: 2;
+  height: 100vh;
+  width: 100vw;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+}
+
+/* ============================================================
+   TOP HUD
+   ============================================================ */
+.hud {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 28px;
+  border-bottom: 1px solid var(--panel-border);
+  background: linear-gradient(to bottom, var(--panel), transparent);
+  backdrop-filter: blur(6px);
+}
+.hud-brand {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.hud-brand .mark {
+  font-family: var(--font-mono);
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.28em;
+  color: var(--gold);
+  text-shadow: 0 0 18px var(--glow-a);
+}
+.hud-brand .sub {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.22em;
+  color: var(--text-lo);
+  text-transform: uppercase;
+  padding-left: 10px;
+  border-left: 1px solid var(--panel-border);
+}
+.hud-center {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.24em;
+  color: var(--text-lo);
+  text-transform: uppercase;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.hud-center .live-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--ok);
+  box-shadow: 0 0 8px var(--ok);
+  animation: livepulse 2.4s ease-in-out infinite;
+}
+@keyframes livepulse { 0%,100%{opacity:1} 50%{opacity:0.35} }
+.hud-right {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--text-lo);
+}
+.hud-right .item { display: flex; align-items: center; gap: 6px; }
+.hud-right .clock { color: var(--gold); font-variant-numeric: tabular-nums; min-width: 64px; }
+.hud-right .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 6px var(--ok); }
+.hud-right .dot.warn { background: var(--danger); box-shadow: 0 0 6px var(--danger); }
+.hud-right svg { width: 13px; height: 13px; opacity: 0.85; }
+.theme-toggle {
+  background: transparent;
+  border: 1px solid var(--panel-border);
+  color: var(--text-lo);
+  border-radius: 6px;
+  padding: 5px 8px;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  transition: border-color 0.2s, color 0.2s;
+}
+.theme-toggle:hover { color: var(--gold); border-color: var(--amber-dim); }
+.theme-toggle:focus-visible { outline: 2px solid var(--ember); outline-offset: 2px; }
+
+/* ============================================================
+   MAIN STAGE
+   ============================================================ */
+.stage {
+  position: relative;
+  display: grid;
+  grid-template-columns: 340px 1fr 320px;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.core-zone {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+}
+
+#core-canvas {
+  width: min(560px, 78vh, 46vw);
+  height: min(560px, 78vh, 46vw);
+  display: block;
+}
+
+.core-label {
+  position: absolute;
+  bottom: 6%;
+  left: 50%;
+  transform: translateX(-50%);
+  text-align: center;
+  pointer-events: none;
+}
+.core-label .state-word {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.35em;
+  color: var(--gold);
+  text-transform: uppercase;
+  text-shadow: 0 0 16px var(--glow-a);
+  transition: opacity 0.3s;
+}
+.core-label .state-sub {
+  margin-top: 4px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.1em;
+  color: var(--text-lo);
+}
+
+/* corner HUD brackets around core zone */
+.bracket {
+  position: absolute;
+  width: 26px;
+  height: 26px;
+  border: 1.5px solid var(--amber-dim);
+  opacity: 0.55;
+  pointer-events: none;
+}
+.bracket.tl { top: 8%; left: 8%; border-right: none; border-bottom: none; }
+.bracket.tr { top: 8%; right: 8%; border-left: none; border-bottom: none; }
+.bracket.bl { bottom: 8%; left: 8%; border-right: none; border-top: none; }
+.bracket.br { bottom: 8%; right: 8%; border-left: none; border-top: none; }
+
+/* ============================================================
+   STATUS PANEL (left)
+   ============================================================ */
+.left-col {
+  display: flex;
+  flex-direction: column;
+  padding: 20px;
+  gap: 16px;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  backdrop-filter: blur(10px);
+  position: relative;
+}
+.panel::before {
+  content: "";
+  position: absolute;
+  top: 0; left: 14px; right: 14px;
+  height: 1px;
+  background: linear-gradient(to right, transparent, var(--amber-dim), transparent);
+}
+
+.status-panel { padding: 16px 18px; }
+.status-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.status-top .dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--text-lo);
+  transition: background 0.3s, box-shadow 0.3s;
+}
+.status-top .dot.active {
+  background: var(--ember);
+  box-shadow: 0 0 10px var(--glow-a);
+  animation: livepulse 1.6s ease-in-out infinite;
+}
+.status-top .label {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.2em;
+  color: var(--text-lo);
+  text-transform: uppercase;
+}
+.status-title {
+  font-family: var(--font-mono);
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: var(--gold);
+  margin: 0 0 6px 0;
+}
+.status-desc {
+  font-size: 13px;
+  color: var(--text-hi);
+  line-height: 1.5;
+  margin: 0 0 10px 0;
+  min-height: 20px;
+}
+.status-meter {
+  height: 2px;
+  background: var(--panel-border);
+  border-radius: 2px;
+  overflow: hidden;
+  margin-top: 4px;
+}
+.status-meter .fill {
+  height: 100%;
+  width: 30%;
+  background: linear-gradient(to right, var(--amber-dim), var(--ember));
+  border-radius: 2px;
+  transition: width 0.4s ease;
+}
+.status-meta {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 8px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--text-lo);
+  letter-spacing: 0.05em;
+}
+
+.activity-panel {
+  padding: 16px 18px;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.activity-panel .panel-title {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.2em;
+  color: var(--text-lo);
+  text-transform: uppercase;
+  margin: 0 0 12px 0;
+  display: flex;
+  justify-content: space-between;
+}
+.activity-list {
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 2px;
+  flex: 1;
+  min-height: 0;
+}
+.activity-list::-webkit-scrollbar { width: 4px; }
+.activity-list::-webkit-scrollbar-thumb { background: var(--amber-dim); border-radius: 2px; }
+.activity-row {
+  display: flex;
+  gap: 10px;
+  padding: 7px 2px;
+  border-bottom: 1px solid var(--panel-border);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  animation: rowIn 0.4s ease;
+}
+@keyframes rowIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+.activity-row .t { color: var(--text-lo); min-width: 40px; font-variant-numeric: tabular-nums; }
+.activity-row .c { color: var(--ok); }
+.activity-row .m { color: var(--text-hi); }
+
+/* ============================================================
+   RIGHT COL — side info panels (contextual)
+   ============================================================ */
+.right-col {
+  display: flex;
+  flex-direction: column;
+  padding: 20px;
+  gap: 16px;
+  min-height: 0;
+  overflow: hidden;
+}
+.side-slot {
+  min-height: 0;
+}
+.info-panel {
+  padding: 16px 18px;
+}
+.info-panel .panel-title {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.2em;
+  color: var(--gold);
+  text-transform: uppercase;
+  margin: 0 0 12px 0;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--panel-border);
+}
+.info-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--panel-border);
+}
+.info-row:last-child { border-bottom: none; }
+.info-row .k {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  color: var(--text-lo);
+  text-transform: uppercase;
+}
+.info-row .v {
+  font-size: 13px;
+  color: var(--text-hi);
+  font-weight: 600;
+  text-align: right;
+}
+.info-row .v.accent { color: var(--gold); }
+
+.fit-ring-wrap { display: flex; align-items: center; justify-content: center; padding: 6px 0 2px; }
+
+.system-panel .panel-title { color: var(--text-lo); }
+.system-list { display: flex; flex-direction: column; gap: 8px; }
+.system-list .srow { display: flex; justify-content: space-between; align-items: center; }
+.system-list .sk { font-family: var(--font-mono); font-size: 10px; color: var(--text-lo); letter-spacing: 0.06em; }
+.system-list .sv { font-family: var(--font-mono); font-size: 10px; color: var(--gold); }
+.bar { width: 90px; height: 3px; background: var(--panel-border); border-radius: 2px; overflow: hidden; }
+.bar .b-fill { height: 100%; background: var(--amber-dim); }
+
+/* ============================================================
+   BOTTOM ZONE — transcript + input
+   ============================================================ */
+.bottom-zone {
+  display: grid;
+  grid-template-columns: 340px 1fr 320px;
+  padding: 0 20px 20px;
+  gap: 16px;
+  align-items: end;
+}
+.transcript-col { grid-column: 1 / 3; display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+
+.transcript-panel {
+  padding: 16px 20px;
+  max-height: 30vh;
+  display: flex;
+  flex-direction: column;
+}
+.transcript-panel .panel-title {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.2em;
+  color: var(--text-lo);
+  text-transform: uppercase;
+  margin: 0 0 10px 0;
+  display: flex;
+  justify-content: space-between;
+}
+.transcript-scroll {
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-right: 4px;
+}
+.transcript-scroll::-webkit-scrollbar { width: 4px; }
+.transcript-scroll::-webkit-scrollbar-thumb { background: var(--amber-dim); border-radius: 2px; }
+
+.line { max-width: 88%; animation: lineIn 0.35s ease; }
+@keyframes lineIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+.line.jarvix { align-self: flex-start; }
+.line.user { align-self: flex-end; text-align: right; }
+.line .who {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.2em;
+  margin-bottom: 4px;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.line.jarvix .who { color: var(--gold); }
+.line.user .who { color: var(--text-lo); justify-content: flex-end; }
+.line .who .ts { color: var(--text-lo); opacity: 0.7; font-weight: 400; letter-spacing: 0.05em; }
+.line.user .who .ts { order: -1; }
+.line .txt {
+  font-size: 14.5px;
+  line-height: 1.55;
+  color: var(--text-hi);
+}
+.line.jarvix .txt { border-left: 2px solid var(--amber-dim); padding-left: 10px; }
+.line .cursor {
+  display: inline-block;
+  width: 7px; height: 15px;
+  background: var(--gold);
+  margin-left: 2px;
+  vertical-align: middle;
+  animation: blink 0.9s steps(1) infinite;
+}
+@keyframes blink { 50% { opacity: 0; } }
+
+/* command input */
+.input-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 10px 10px 18px;
+}
+.mic-btn {
+  flex-shrink: 0;
+  width: 46px; height: 46px;
+  border-radius: 50%;
+  border: 1px solid var(--panel-border);
+  background: radial-gradient(circle, rgba(255,170,90,0.08), transparent 70%);
+  color: var(--gold);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: border-color 0.2s, box-shadow 0.2s, transform 0.15s;
+  position: relative;
+}
+.mic-btn:hover { border-color: var(--ember); transform: scale(1.04); }
+.mic-btn:focus-visible { outline: 2px solid var(--ember); outline-offset: 3px; }
+.mic-btn.on {
+  border-color: var(--ember);
+  box-shadow: 0 0 0 0 var(--glow-a);
+  animation: micpulse 1.5s ease-out infinite;
+}
+@keyframes micpulse {
+  0% { box-shadow: 0 0 0 0 var(--glow-a); }
+  70% { box-shadow: 0 0 0 14px rgba(255,148,48,0); }
+  100% { box-shadow: 0 0 0 0 rgba(255,148,48,0); }
+}
+.mic-btn svg { width: 19px; height: 19px; }
+
+.cmd-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text-hi);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  padding: 8px 4px;
+}
+.cmd-input::placeholder { color: var(--text-lo); }
+
+.send-btn {
+  flex-shrink: 0;
+  width: 40px; height: 40px;
+  border-radius: 10px;
+  border: 1px solid var(--panel-border);
+  background: transparent;
+  color: var(--text-lo);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: border-color 0.2s, color 0.2s;
+}
+.send-btn:hover { color: var(--gold); border-color: var(--amber-dim); }
+.send-btn:focus-visible { outline: 2px solid var(--ember); outline-offset: 2px; }
+.send-btn svg { width: 17px; height: 17px; }
+
+.input-col { display: flex; flex-direction: column; gap: 10px; }
+.demo-btn {
+  align-self: flex-end;
+  background: transparent;
+  border: 1px solid var(--panel-border);
+  color: var(--text-lo);
+  border-radius: 8px;
+  padding: 7px 12px;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: border-color 0.2s, color 0.2s;
+}
+.demo-btn:hover { color: var(--gold); border-color: var(--amber-dim); }
+.demo-btn:focus-visible { outline: 2px solid var(--ember); outline-offset: 2px; }
+.demo-btn svg { width: 12px; height: 12px; }
+.demo-btn.running { color: var(--ember); border-color: var(--ember); }
+
+/* waveform strip shown while listening/speaking, inline above input */
+.wave-strip {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  height: 0;
+  overflow: hidden;
+  transition: height 0.3s ease;
+}
+.wave-strip.show { height: 28px; }
+.wave-strip .bar {
+  width: 3px;
+  border-radius: 2px;
+  background: var(--ember);
+  box-shadow: 0 0 6px var(--glow-a);
+}
+
+/* ============================================================
+   RESPONSIVE
+   ============================================================ */
+@media (max-width: 1180px) {
+  .stage { grid-template-columns: 300px 1fr 0px; }
+  .right-col { display: none; }
+  .bottom-zone { grid-template-columns: 300px 1fr; }
+  .transcript-col { grid-column: 1 / 3; }
+}
+
+@media (max-width: 860px) {
+  .stage { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
+  .left-col { flex-direction: row; padding: 12px 16px; gap: 10px; }
+  .status-panel { flex: 1; }
+  .activity-panel { display: none; }
+  #core-canvas { width: min(320px, 60vw); height: min(320px, 60vw); }
+  .bottom-zone { grid-template-columns: 1fr; padding: 0 14px 14px; }
+  .transcript-col { grid-column: 1; }
+  .hud-brand .sub { display: none; }
+  .hud-center { display: none; }
+}
+
+@media (max-width: 520px) {
+  .left-col { flex-direction: column; }
+  .status-desc { min-height: 0; }
+  .hud-right .item span.hide-sm { display: none; }
+}
+
+.sr-only {
+  position: absolute; width: 1px; height: 1px;
+  padding: 0; margin: -1px; overflow: hidden;
+  clip: rect(0,0,0,0); white-space: nowrap; border: 0;
+}
+</style>
+
+<div class="bg-field"></div>
+<div class="bg-grid"></div>
+<div class="scanline"></div>
+
+<div class="app">
+
+  <!-- ================= TOP HUD ================= -->
+  <header class="hud">
+    <div class="hud-brand">
+      <span class="mark">JARVIX</span>
+      <span class="sub">Personal AI System</span>
+    </div>
+    <div class="hud-center">
+      <span class="live-dot"></span>
+      <span id="hud-live-label">SYSTEM ONLINE</span>
+    </div>
+    <div class="hud-right">
+      <button class="theme-toggle" id="theme-toggle" aria-label="Toggle color theme">AUTO</button>
+      <span class="item"><span class="dot" id="conn-dot"></span><span class="hide-sm">LINK</span></span>
+      <span class="item">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" id="mic-status-icon"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/></svg>
+        <span id="mic-status-label" class="hide-sm">STANDBY</span>
+      </span>
+      <span class="item clock" id="hud-clock">--:--:--</span>
+    </div>
+  </header>
+
+  <!-- ================= STAGE ================= -->
+  <main class="stage">
+
+    <!-- LEFT: status + activity -->
+    <section class="left-col">
+      <div class="panel status-panel" id="status-panel">
+        <div class="status-top">
+          <span class="dot" id="status-dot"></span>
+          <span class="label" id="status-state-label">IDLE</span>
+        </div>
+        <p class="status-title" id="status-title">Standing By</p>
+        <p class="status-desc" id="status-desc">Awaiting your command.</p>
+        <div class="status-meter"><div class="fill" id="status-meter-fill"></div></div>
+        <div class="status-meta">
+          <span id="status-meta-left">READY</span>
+          <span id="status-meta-right">&nbsp;</span>
+        </div>
+      </div>
+
+      <div class="panel activity-panel">
+        <p class="panel-title"><span>ACTIVITY LOG</span><span id="activity-count">0</span></p>
+        <div class="activity-list" id="activity-list" aria-live="polite"></div>
+      </div>
+    </section>
+
+    <!-- CENTER: JARVIX core -->
+    <section class="core-zone">
+      <span class="bracket tl"></span><span class="bracket tr"></span>
+      <span class="bracket bl"></span><span class="bracket br"></span>
+      <canvas id="core-canvas" width="1000" height="1000" role="img" aria-label="JARVIX AI visualization, currently idle"></canvas>
+      <div class="core-label">
+        <div class="state-word" id="core-state-word">IDLE</div>
+        <div class="state-sub" id="core-state-sub">Systems nominal</div>
+      </div>
+    </section>
+
+    <!-- RIGHT: contextual info panels -->
+    <section class="right-col">
+      <div class="side-slot" id="side-slot-context"></div>
+      <div class="panel system-panel" style="padding:16px 18px;">
+        <p class="panel-title">System</p>
+        <div class="system-list">
+          <div class="srow"><span class="sk">MEMORY LINK</span><span class="sv">STABLE</span></div>
+          <div class="srow"><span class="sk">VOICE ENGINE</span><div class="bar"><div class="b-fill" style="width:82%"></div></div></div>
+          <div class="srow"><span class="sk">REASONING</span><div class="bar"><div class="b-fill" style="width:64%"></div></div></div>
+          <div class="srow"><span class="sk">LATENCY</span><span class="sv" id="sys-latency">42ms</span></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- ================= BOTTOM: transcript + input ================= -->
+  <div class="bottom-zone">
+    <div class="transcript-col">
+      <div class="panel transcript-panel">
+        <p class="panel-title"><span>LIVE TRANSCRIPT</span><span id="transcript-hint">SESSION 0142</span></p>
+        <div class="transcript-scroll" id="transcript-scroll" aria-live="polite"></div>
+      </div>
+
+      <div class="wave-strip" id="wave-strip"></div>
+
+      <div class="panel input-col" style="padding:0;">
+        <div class="input-bar">
+          <button class="mic-btn" id="mic-btn" aria-label="Start voice input" aria-pressed="false">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" id="mic-icon"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+          </button>
+          <input class="cmd-input" id="cmd-input" type="text" placeholder="Talk to JARVIX or type a command…" autocomplete="off" />
+          <button class="send-btn" id="send-btn" aria-label="Send command">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div style="grid-column: 3; display:flex; justify-content:flex-end; gap: 8px;">
+      <button class="demo-btn" id="briefing-btn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+        BRIEFING
+      </button>
+      <button class="demo-btn" id="demo-btn">
+        <svg viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+        DEMO MODE
+      </button>
+    </div>
+  </div>
+
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  /* ============================================================
+     THEME TOGGLE (system / light / dark)
+     ============================================================ */
+  const root = document.documentElement;
+  const themeBtn = document.getElementById("theme-toggle");
+  const themes = ["auto", "dark", "light"];
+  let themeIdx = 0;
+  themeBtn.addEventListener("click", () => {
+    themeIdx = (themeIdx + 1) % themes.length;
+    const t = themes[themeIdx];
+    if (t === "auto") root.removeAttribute("data-theme");
+    else root.setAttribute("data-theme", t);
+    themeBtn.textContent = t.toUpperCase();
+  });
+
+  /* ============================================================
+     CLOCK
+     ============================================================ */
+  const clockEl = document.getElementById("hud-clock");
+  function tickClock() {
+    const d = new Date();
+    clockEl.textContent = d.toLocaleTimeString([], { hour12: false });
+  }
+  tickClock();
+  setInterval(tickClock, 1000);
+
+  /* ============================================================
+     STATE MACHINE
+     jarvixState: IDLE | LISTENING | PROCESSING | SEARCHING | EXECUTING | SPEAKING | ERROR
+     This is the seam meant to be replaced by the real backend later:
+     startListening(), stopListening(), sendCommand(), processCommand(),
+     speakResponse() are the integration points.
+     ============================================================ */
+  const STATES = {
+    IDLE: "IDLE",
+    LISTENING: "LISTENING",
+    PROCESSING: "PROCESSING",
+    SEARCHING: "SEARCHING",
+    EXECUTING: "EXECUTING",
+    SPEAKING: "SPEAKING",
+    ERROR: "ERROR",
+  };
+
+  const STATE_META = {
+    IDLE:       { word: "IDLE",       sub: "Systems nominal",              title: "Standing By",              desc: "Awaiting your command.",                 meta: "READY" },
+    LISTENING:  { word: "LISTENING",  sub: "Capturing audio input",        title: "Listening…",                desc: "Go ahead, I'm listening.",               meta: "MIC ACTIVE" },
+    PROCESSING: { word: "THINKING",   sub: "Interpreting request",         title: "Understanding Request",     desc: "Parsing intent and context…",            meta: "REASONING" },
+    SEARCHING:  { word: "SEARCHING",  sub: "Querying external sources",    title: "Searching",                 desc: "Searching sources…",                     meta: "WEB QUERY" },
+    EXECUTING:  { word: "EXECUTING",  sub: "Running structured action",    title: "Executing Task",            desc: "Structuring and executing task…",        meta: "TASK RUN" },
+    SPEAKING:   { word: "SPEAKING",   sub: "Delivering response",          title: "JARVIX Speaking",           desc: "Responding…",                            meta: "AUDIO OUT" },
+    ERROR:      { word: "ERROR",     sub: "Attention required",           title: "Something Went Wrong",      desc: "I couldn't complete that. Try again.",   meta: "FAULT" },
+  };
+
+  const app = {
+    jarvixState: STATES.IDLE,
+    transcript: [],       // { who: 'user'|'jarvix', text, ts }
+    currentAction: null,  // { kind, label, detail, progress, meta }
+    isListening: false,
+    isSpeaking: false,
+    isProcessing: false,
+    activityLog: [],      // { ts, msg }
+    messages: [],
+    sessionId: "0142",
+  };
+
+  // ---- DOM refs ----
+  const el = {
+    statusDot: document.getElementById("status-dot"),
+    statusStateLabel: document.getElementById("status-state-label"),
+    statusTitle: document.getElementById("status-title"),
+    statusDesc: document.getElementById("status-desc"),
+    statusMeterFill: document.getElementById("status-meter-fill"),
+    statusMetaLeft: document.getElementById("status-meta-left"),
+    statusMetaRight: document.getElementById("status-meta-right"),
+    coreStateWord: document.getElementById("core-state-word"),
+    coreStateSub: document.getElementById("core-state-sub"),
+    activityList: document.getElementById("activity-list"),
+    activityCount: document.getElementById("activity-count"),
+    transcriptScroll: document.getElementById("transcript-scroll"),
+    cmdInput: document.getElementById("cmd-input"),
+    sendBtn: document.getElementById("send-btn"),
+    micBtn: document.getElementById("mic-btn"),
+    micStatusLabel: document.getElementById("mic-status-label"),
+    micStatusIcon: document.getElementById("mic-status-icon"),
+    waveStrip: document.getElementById("wave-strip"),
+    demoBtn: document.getElementById("demo-btn"),
+    briefingBtn: document.getElementById("briefing-btn"),
+    sideSlot: document.getElementById("side-slot-context"),
+    hudLiveLabel: document.getElementById("hud-live-label"),
+    connDot: document.getElementById("conn-dot"),
+    sysLatency: document.getElementById("sys-latency"),
+    canvas: document.getElementById("core-canvas"),
+  };
+
+  /* ============================================================
+     RENDER: status panel
+     ============================================================ */
+  function renderStatus() {
+    const meta = STATE_META[app.jarvixState];
+    el.statusStateLabel.textContent = app.jarvixState;
+    el.statusDot.classList.toggle("active", app.jarvixState !== STATES.IDLE);
+    el.coreStateWord.textContent = meta.word;
+    el.coreStateSub.textContent = app.currentAction ? app.currentAction.detail : meta.sub;
+    el.canvas.setAttribute("aria-label", "JARVIX AI visualization, currently " + meta.word.toLowerCase());
+
+    if (app.currentAction) {
+      el.statusTitle.textContent = app.currentAction.label;
+      el.statusDesc.textContent = app.currentAction.detail;
+      el.statusMeterFill.style.width = (app.currentAction.progress || 10) + "%";
+      el.statusMetaLeft.textContent = app.currentAction.meta || meta.meta;
+      el.statusMetaRight.textContent = app.currentAction.metaRight || "";
+    } else {
+      el.statusTitle.textContent = meta.title;
+      el.statusDesc.textContent = meta.desc;
+      el.statusMeterFill.style.width = (app.jarvixState === "IDLE" ? 8 : 40) + "%";
+      el.statusMetaLeft.textContent = meta.meta;
+      el.statusMetaRight.textContent = "";
+    }
+
+    el.hudLiveLabel.textContent = app.jarvixState === STATES.ERROR ? "FAULT DETECTED" : "SYSTEM ONLINE";
+    el.connDot.classList.toggle("warn", app.jarvixState === STATES.ERROR);
+    el.sysLatency.textContent = (30 + Math.round(Math.random() * 40)) + "ms";
+  }
+
+  function setState(next, action) {
+    app.jarvixState = next;
+    app.isListening = next === STATES.LISTENING;
+    app.isProcessing = next === STATES.PROCESSING || next === STATES.SEARCHING || next === STATES.EXECUTING;
+    app.isSpeaking = next === STATES.SPEAKING;
+    app.currentAction = action || null;
+    renderStatus();
+    updateMicUI();
+    updateWaveStrip();
+    coreViz.setState(next);
+  }
+
+  /* ============================================================
+     ACTIVITY LOG
+     ============================================================ */
+  function logActivity(msg) {
+    const ts = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    app.activityLog.push({ ts, msg });
+    const row = document.createElement("div");
+    row.className = "activity-row";
+    row.innerHTML = `<span class="t">${ts}</span><span class="c">✓</span><span class="m">${msg}</span>`;
+    el.activityList.appendChild(row);
+    el.activityCount.textContent = app.activityLog.length;
+  }
+
+  /* ============================================================
+     TRANSCRIPT
+     ============================================================ */
+  function addTranscriptLine(who, fullText, opts) {
+    opts = opts || {};
+    const ts = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    const wrap = document.createElement("div");
+    wrap.className = "line " + who;
+    const whoLabel = who === "user" ? "YOU" : "JARVIX";
+    wrap.innerHTML = `<div class="who"><span>${whoLabel}</span><span class="ts">${ts}</span></div><div class="txt"><span class="txt-content"></span></div>`;
+    el.transcriptScroll.appendChild(wrap);
+    el.transcriptScroll.scrollTop = el.transcriptScroll.scrollHeight;
+    const contentEl = wrap.querySelector(".txt-content");
+
+    if (opts.progressive === false) {
+      contentEl.textContent = fullText;
+      return Promise.resolve();
+    }
+
+    // word-by-word progressive reveal
+    const words = fullText.split(" ");
+    const cursor = document.createElement("span");
+    cursor.className = "cursor";
+    wrap.querySelector(".txt").appendChild(cursor);
+
+    return new Promise((resolve) => {
+      let i = 0;
+      const speed = who === "user" ? 55 : 40;
+      function step() {
+        if (i >= words.length) {
+          cursor.remove();
+          resolve();
+          return;
+        }
+        contentEl.textContent = words.slice(0, i + 1).join(" ");
+        el.transcriptScroll.scrollTop = el.transcriptScroll.scrollHeight;
+        i++;
+        setTimeout(step, speed + Math.random() * 40);
+      }
+      step();
+    });
+  }
+
+  /* ============================================================
+     AUDIO BRIDGE — real mic capture (MediaRecorder) + real amplitude
+     analysis (AnalyserNode) for both listening (mic) and speaking (TTS
+     playback). Falls back to null/no-op cleanly when getUserMedia isn't
+     available or permission is denied - callers check for null.
+     ============================================================ */
+  const AudioBridge = (function () {
+    let audioCtx = null;
+    let analyser = null;
+    let sourceNode = null;
+    let freqData = null;
+
+    let mediaStream = null;
+    let mediaRecorder = null;
+    let recordedChunks = [];
+
+    function ctx() {
+      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      return audioCtx;
+    }
+
+    function attachAnalyser(node) {
+      if (sourceNode) { try { sourceNode.disconnect(); } catch (e) {} }
+      analyser = ctx().createAnalyser();
+      analyser.fftSize = 256;
+      freqData = new Uint8Array(analyser.frequencyBinCount);
+      node.connect(analyser);
+      sourceNode = node;
+    }
+
+    // 0..1 current amplitude level, or null if nothing is being analyzed.
+    function level() {
+      if (!analyser || !freqData) return null;
+      analyser.getByteFrequencyData(freqData);
+      let sum = 0;
+      for (let i = 0; i < freqData.length; i++) sum += freqData[i];
+      return Math.min(1, (sum / freqData.length / 255) * 2.2); // small boost, quiet speech reads low otherwise
+    }
+
+    async function startMic() {
+      mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      attachAnalyser(ctx().createMediaStreamSource(mediaStream));
+
+      recordedChunks = [];
+      const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus" : "";
+      mediaRecorder = new MediaRecorder(mediaStream, mimeType ? { mimeType } : undefined);
+      mediaRecorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) recordedChunks.push(e.data); };
+      mediaRecorder.start();
+    }
+
+    // Stops recording + the mic stream, resolves with the recorded Blob (or null if nothing captured).
+    function stopMic() {
+      return new Promise((resolve) => {
+        if (!mediaRecorder) { resolve(null); return; }
+        mediaRecorder.onstop = () => {
+          const blob = recordedChunks.length ? new Blob(recordedChunks, { type: mediaRecorder.mimeType || "audio/webm" }) : null;
+          recordedChunks = [];
+          if (mediaStream) mediaStream.getTracks().forEach((t) => t.stop());
+          mediaStream = null;
+          mediaRecorder = null;
+          if (sourceNode) { try { sourceNode.disconnect(); } catch (e) {} }
+          analyser = null; sourceNode = null; freqData = null;
+          resolve(blob);
+        };
+        try { mediaRecorder.stop(); } catch (e) { resolve(null); }
+      });
+    }
+
+    function abortMic() {
+      if (mediaRecorder) { try { mediaRecorder.stop(); } catch (e) {} }
+      if (mediaStream) mediaStream.getTracks().forEach((t) => t.stop());
+      mediaStream = null; mediaRecorder = null; recordedChunks = [];
+      if (sourceNode) { try { sourceNode.disconnect(); } catch (e) {} }
+      analyser = null; sourceNode = null; freqData = null;
+    }
+
+    // Analyzes an <audio> element's live playback (TTS response).
+    function analyzePlayback(audioEl) {
+      const node = ctx().createMediaElementSource(audioEl);
+      attachAnalyser(node);
+      node.connect(ctx().destination); // keep audio audible - analyser alone is a passive tap
+    }
+
+    function stopAnalysis() {
+      if (sourceNode) { try { sourceNode.disconnect(); } catch (e) {} }
+      analyser = null; sourceNode = null; freqData = null;
+    }
+
+    return { startMic, stopMic, abortMic, analyzePlayback, stopAnalysis, level };
+  })();
+
+  /* ============================================================
+     WAVEFORM STRIP (real amplitude when AudioBridge is active, simulated otherwise)
+     ============================================================ */
+  let waveBars = [];
+  let waveRAF = null;
+  function buildWaveStrip() {
+    el.waveStrip.innerHTML = "";
+    waveBars = [];
+    const n = 40;
+    for (let i = 0; i < n; i++) {
+      const b = document.createElement("div");
+      b.className = "bar";
+      b.style.height = "4px";
+      el.waveStrip.appendChild(b);
+      waveBars.push(b);
+    }
+  }
+  buildWaveStrip();
+
+  function updateWaveStrip() {
+    const active = app.isListening || app.isSpeaking;
+    el.waveStrip.classList.toggle("show", active);
+    if (active && !waveRAF) animateWave();
+    if (!active && waveRAF) { cancelAnimationFrame(waveRAF); waveRAF = null; }
+  }
+  function animateWave() {
+    const t = performance.now() / 1000;
+    const liveLevel = AudioBridge.level();
+    coreViz.setLiveLevel(liveLevel);
+    waveBars.forEach((b, i) => {
+      const phase = i * 0.35;
+      const amp = app.isSpeaking ? 22 : 14;
+      let h;
+      if (liveLevel !== null) {
+        // Real amplitude, with a touch of per-bar phase jitter so it doesn't
+        // look like a single flat meter - still genuinely audio-driven.
+        const jitter = 0.75 + 0.5 * Math.abs(Math.sin(t * 5 + phase));
+        h = 4 + liveLevel * amp * 1.6 * jitter;
+      } else {
+        h = 4 + Math.abs(Math.sin(t * 3 + phase) * Math.cos(t * 1.3 + phase * 0.5)) * amp;
+      }
+      b.style.height = h.toFixed(1) + "px";
+    });
+    waveRAF = requestAnimationFrame(animateWave);
+  }
+
+  /* ============================================================
+     MIC UI
+     ============================================================ */
+  function updateMicUI() {
+    el.micBtn.classList.toggle("on", app.isListening);
+    el.micBtn.setAttribute("aria-pressed", String(app.isListening));
+    el.micStatusLabel.textContent = app.isListening ? "LIVE" : "STANDBY";
+    el.micStatusIcon.style.color = app.isListening ? "var(--ember)" : "";
+  }
+
+  /* ============================================================
+     SIDE INFO PANELS (contextual, slide/fade in)
+     ============================================================ */
+  function showSidePanel(html) {
+    el.sideSlot.innerHTML = `<div class="panel info-panel" style="animation: rowIn 0.4s ease;">${html}</div>`;
+  }
+  function clearSidePanel() {
+    el.sideSlot.innerHTML = "";
+  }
+
+  function opportunityPanel({ location, sources, found, topFit }) {
+    showSidePanel(`
+      <p class="panel-title">Opportunity Search</p>
+      <div class="info-row"><span class="k">Location</span><span class="v">${location}</span></div>
+      <div class="info-row"><span class="k">Sources</span><span class="v">${sources}</span></div>
+      <div class="info-row"><span class="k">Found</span><span class="v accent">${found}</span></div>
+      <div class="info-row"><span class="k">Top Match</span><span class="v accent">${topFit}% fit</span></div>
+    `);
+  }
+  function applicationPanel({ company, position, status }) {
+    showSidePanel(`
+      <p class="panel-title">Application</p>
+      <div class="info-row"><span class="k">Company</span><span class="v">${company}</span></div>
+      <div class="info-row"><span class="k">Position</span><span class="v">${position}</span></div>
+      <div class="info-row"><span class="k">Status</span><span class="v accent">${status}</span></div>
+    `);
+  }
+  function taskPanel({ title, due }) {
+    showSidePanel(`
+      <p class="panel-title">Structured Task</p>
+      <div class="info-row"><span class="k">Task</span><span class="v">${title}</span></div>
+      <div class="info-row"><span class="k">Due</span><span class="v accent">${due}</span></div>
+      <div class="info-row"><span class="k">Confirm</span><span class="v">Pending</span></div>
+    `);
+  }
+
+  function escapeHtml(value) {
+    return String(value ?? "").replace(/[&<>"']/g, (c) => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+    }[c]));
+  }
+
+  // Real memory/goals data from the backend's get_recent_memories/get_goals
+  // tool results (see handleBackendEvent's tool_result case) - not scripted
+  // simulation data, unlike the panels above.
+  function memoryPanel(items) {
+    const rows = (items || []).slice(0, 6).map((m) =>
+      `<div class="info-row"><span class="k">${escapeHtml(m.kind || m.domain || "memory")}</span><span class="v">${escapeHtml(m.content)}</span></div>`
+    ).join("");
+    showSidePanel(`<p class="panel-title">Personal Memory</p>${rows || '<div class="info-row"><span class="k">Status</span><span class="v">Nothing stored yet</span></div>'}`);
+  }
+  function goalsPanel(items) {
+    const rows = (items || []).slice(0, 6).map((g) =>
+      `<div class="info-row"><span class="k">Priority ${escapeHtml(g.priority ?? "-")}</span><span class="v">${escapeHtml(g.title)}</span></div>`
+    ).join("");
+    showSidePanel(`<p class="panel-title">Active Goals</p>${rows || '<div class="info-row"><span class="k">Status</span><span class="v">No active goals</span></div>'}`);
+  }
+
+  // Live browser-agent panel - real events streamed from app/browser/tools.py
+  // via app/server.py's SSE bridge (browser_task_start/read/action/confirmation/
+  // ask_user/done), not scripted simulation data.
+  let browserPanelSteps = [];
+  function browserTaskPanel({ instruction, page, status }) {
+    if (instruction !== undefined) browserPanelSteps = [];
+    if (page) browserPanelSteps.push(page);
+    const rows = browserPanelSteps.slice(-6).map((step) =>
+      `<div class="info-row"><span class="k">${escapeHtml(step.k)}</span><span class="v">${escapeHtml(step.v)}</span></div>`
+    ).join("");
+    showSidePanel(`
+      <p class="panel-title">Browser Agent</p>
+      ${status ? `<div class="info-row"><span class="k">Status</span><span class="v accent">${escapeHtml(status)}</span></div>` : ""}
+      ${rows}
+    `);
+  }
+
+  /* ============================================================
+     JARVIX CORE — canvas visualization
+     idle / listening / processing(+searching/executing) / speaking
+     ============================================================ */
+  const coreViz = (function () {
+    const canvas = el.canvas;
+    const ctx = canvas.getContext("2d");
+    let W = canvas.width, H = canvas.height;
+    let cx = W / 2, cy = H / 2;
+    let baseR = W * 0.20;
+
+    let state = STATES.IDLE;
+    let t = 0;
+    let energy = 0;        // smoothed intensity 0..1
+    let targetEnergy = 0.18;
+    let particles = [];
+
+    const stateEnergy = {
+      IDLE: 0.16, LISTENING: 0.55, PROCESSING: 0.65,
+      SEARCHING: 0.7, EXECUTING: 0.7, SPEAKING: 0.85, ERROR: 0.4,
+    };
+
+    function initParticles() {
+      particles = [];
+      for (let i = 0; i < 46; i++) {
+        const a = Math.random() * Math.PI * 2;
+        const r = baseR * (1.15 + Math.random() * 0.9);
+        particles.push({
+          angle: a,
+          radius: r,
+          speed: (Math.random() * 0.4 + 0.15) * (Math.random() < 0.5 ? 1 : -1),
+          size: Math.random() * 1.8 + 0.6,
+          drift: Math.random() * Math.PI * 2,
+        });
+      }
+    }
+    initParticles();
+
+    let liveLevel = null; // 0..1 real audio amplitude, or null when nothing is feeding live audio
+    function setState(s) { state = s; targetEnergy = stateEnergy[s] ?? 0.2; }
+    function setLiveLevel(v) { liveLevel = v; }
+
+    function colorVals() {
+      const styles = getComputedStyle(document.documentElement);
+      return {
+        ember: styles.getPropertyValue("--ember").trim(),
+        gold: styles.getPropertyValue("--gold").trim(),
+        amberDim: styles.getPropertyValue("--amber-dim").trim(),
+        white: styles.getPropertyValue("--white-hot").trim(),
+        danger: styles.getPropertyValue("--danger").trim(),
+      };
+    }
+
+    function hexToRgba(hex, a) {
+      hex = hex.replace("#", "");
+      if (hex.length === 3) hex = hex.split("").map(c => c + c).join("");
+      const num = parseInt(hex, 16);
+      const r = (num >> 16) & 255, g = (num >> 8) & 255, b = num & 255;
+      return `rgba(${r},${g},${b},${a})`;
+    }
+
+    function draw() {
+      t += 0.016;
+      // Real mic/TTS amplitude (when available) rides on top of the state
+      // baseline instead of replacing it, so the visualization still reads
+      // as "LISTENING"/"SPEAKING" even during a quiet moment in the audio.
+      const goal = liveLevel === null ? targetEnergy : Math.max(targetEnergy, targetEnergy * 0.6 + liveLevel * 0.9);
+      energy += (goal - energy) * 0.15;
+      const c = colorVals();
+      const accent = state === STATES.ERROR ? c.danger : c.ember;
+
+      ctx.clearRect(0, 0, W, H);
+
+      // ---- outer glow bloom ----
+      const bloomR = baseR * (2.6 + energy * 1.4 + Math.sin(t * 0.7) * 0.05);
+      const bloom = ctx.createRadialGradient(cx, cy, baseR * 0.2, cx, cy, bloomR);
+      bloom.addColorStop(0, hexToRgba(accent, 0.22 + energy * 0.18));
+      bloom.addColorStop(0.5, hexToRgba(accent, 0.06 + energy * 0.06));
+      bloom.addColorStop(1, hexToRgba(accent, 0));
+      ctx.fillStyle = bloom;
+      ctx.beginPath();
+      ctx.arc(cx, cy, bloomR, 0, Math.PI * 2);
+      ctx.fill();
+
+      // ---- orbital rings ----
+      const ringCount = 3;
+      for (let i = 0; i < ringCount; i++) {
+        const rr = baseR * (1.3 + i * 0.42);
+        const speedMul = (state === STATES.PROCESSING || state === STATES.SEARCHING || state === STATES.EXECUTING) ? 2.2 : 1;
+        const rot = t * (0.12 + i * 0.05) * speedMul * (i % 2 === 0 ? 1 : -1);
+        const segs = 5 + i * 2;
+        const gap = 0.35;
+        ctx.save();
+        ctx.translate(cx, cy);
+        ctx.rotate(rot);
+        ctx.strokeStyle = hexToRgba(i === 0 ? c.gold : c.amberDim, 0.35 + energy * 0.4 - i * 0.05);
+        ctx.lineWidth = i === 0 ? 1.6 : 1;
+        for (let s = 0; s < segs; s++) {
+          const a0 = (s / segs) * Math.PI * 2;
+          const a1 = a0 + (Math.PI * 2 / segs) * (1 - gap);
+          ctx.beginPath();
+          ctx.arc(0, 0, rr, a0, a1);
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+
+      // ---- processing scan ring (extra, only when thinking/searching/executing) ----
+      if (state === STATES.PROCESSING || state === STATES.SEARCHING || state === STATES.EXECUTING) {
+        const scanR = baseR * 2.05;
+        const scanA = (t * 1.8) % (Math.PI * 2);
+        ctx.save();
+        ctx.translate(cx, cy);
+        const grad = ctx.createConicGradient ? ctx.createConicGradient(scanA, 0, 0) : null;
+        ctx.strokeStyle = hexToRgba(c.gold, 0.7);
+        ctx.lineWidth = 2.2;
+        ctx.beginPath();
+        ctx.arc(0, 0, scanR, scanA, scanA + 0.5);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      // ---- HUD tick ring (thin, static-ish, technical) ----
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.rotate(t * 0.04);
+      ctx.strokeStyle = hexToRgba(c.amberDim, 0.5);
+      ctx.lineWidth = 1;
+      const tickR = baseR * 2.35;
+      const ticks = 72;
+      for (let i = 0; i < ticks; i++) {
+        if (i % 6 === 0) continue;
+        const a = (i / ticks) * Math.PI * 2;
+        const len = i % 3 === 0 ? 10 : 5;
+        const x0 = Math.cos(a) * tickR, y0 = Math.sin(a) * tickR;
+        const x1 = Math.cos(a) * (tickR - len), y1 = Math.sin(a) * (tickR - len);
+        ctx.beginPath();
+        ctx.moveTo(x0, y0); ctx.lineTo(x1, y1);
+        ctx.stroke();
+      }
+      ctx.restore();
+
+      // ---- particles ----
+      particles.forEach((p) => {
+        p.angle += p.speed * 0.01 * (1 + energy);
+        const wobble = Math.sin(t * 1.5 + p.drift) * baseR * 0.06;
+        const rad = p.radius + wobble - energy * baseR * 0.15 * (state === STATES.PROCESSING || state === STATES.SEARCHING ? Math.sin(t * 2 + p.drift) : 0);
+        const x = cx + Math.cos(p.angle) * rad;
+        const y = cy + Math.sin(p.angle) * rad;
+        ctx.beginPath();
+        ctx.fillStyle = hexToRgba(c.gold, 0.5 + energy * 0.4);
+        ctx.arc(x, y, p.size * (0.7 + energy * 0.6), 0, Math.PI * 2);
+        ctx.fill();
+      });
+
+      // ---- speaking waveform ring ----
+      if (state === STATES.SPEAKING) {
+        ctx.save();
+        ctx.translate(cx, cy);
+        const segs = 120;
+        ctx.beginPath();
+        for (let i = 0; i <= segs; i++) {
+          const a = (i / segs) * Math.PI * 2;
+          const amp = (Math.sin(a * 6 + t * 6) * 0.5 + Math.sin(a * 11 - t * 4) * 0.3) * baseR * 0.09 * energy;
+          const rr = baseR * 1.12 + amp;
+          const x = Math.cos(a) * rr, y = Math.sin(a) * rr;
+          if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        }
+        ctx.closePath();
+        ctx.strokeStyle = hexToRgba(c.ember, 0.8);
+        ctx.lineWidth = 1.8;
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      // ---- listening reactive ring ----
+      if (state === STATES.LISTENING) {
+        ctx.save();
+        ctx.translate(cx, cy);
+        const segs = 90;
+        ctx.beginPath();
+        for (let i = 0; i <= segs; i++) {
+          const a = (i / segs) * Math.PI * 2;
+          const amp = Math.abs(Math.sin(a * 4 + t * 8)) * baseR * 0.06 * energy;
+          const rr = baseR * 1.08 + amp;
+          const x = Math.cos(a) * rr, y = Math.sin(a) * rr;
+          if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        }
+        ctx.strokeStyle = hexToRgba(c.gold, 0.65);
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      // ---- core disc ----
+      const pulse = state === STATES.IDLE ? Math.sin(t * 0.9) * 0.03 : Math.sin(t * 4) * 0.02 * energy;
+      const coreR = baseR * (0.62 + pulse + energy * 0.06);
+      const coreGrad = ctx.createRadialGradient(cx, cy - coreR * 0.15, coreR * 0.05, cx, cy, coreR);
+      coreGrad.addColorStop(0, hexToRgba(c.white, 0.95));
+      coreGrad.addColorStop(0.35, hexToRgba(accent, 0.9));
+      coreGrad.addColorStop(0.75, hexToRgba(accent, 0.35));
+      coreGrad.addColorStop(1, hexToRgba(accent, 0));
+      ctx.beginPath();
+      ctx.fillStyle = coreGrad;
+      ctx.arc(cx, cy, coreR, 0, Math.PI * 2);
+      ctx.fill();
+
+      // inner iris rings (JARVIX "eye")
+      ctx.save();
+      ctx.translate(cx, cy);
+      for (let i = 1; i <= 2; i++) {
+        ctx.beginPath();
+        ctx.strokeStyle = hexToRgba(c.white, 0.5 - i * 0.15);
+        ctx.lineWidth = 1;
+        ctx.arc(0, 0, coreR * (0.4 + i * 0.22), 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      // small crosshair ticks
+      ctx.rotate(t * 0.5);
+      ctx.strokeStyle = hexToRgba(c.white, 0.6);
+      ctx.lineWidth = 1.2;
+      [0, Math.PI / 2, Math.PI, Math.PI * 1.5].forEach((a) => {
+        const r0 = coreR * 0.15, r1 = coreR * 0.3;
+        ctx.beginPath();
+        ctx.moveTo(Math.cos(a) * r0, Math.sin(a) * r0);
+        ctx.lineTo(Math.cos(a) * r1, Math.sin(a) * r1);
+        ctx.stroke();
+      });
+      ctx.restore();
+
+      requestAnimationFrame(draw);
+    }
+
+    function resize() {
+      const rect = canvas.getBoundingClientRect();
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      canvas.width = rect.width * dpr;
+      canvas.height = rect.height * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      W = rect.width; H = rect.height;
+      cx = W / 2; cy = H / 2;
+      baseR = Math.min(W, H) * 0.19;
+      initParticles();
+    }
+    window.addEventListener("resize", resize);
+    requestAnimationFrame(() => { resize(); requestAnimationFrame(draw); });
+
+    return { setState, resize, setLiveLevel };
+  })();
+
+  /* ============================================================
+     VOICE I/O — real mic capture -> /api/transcribe, real /api/speak playback.
+     ============================================================ */
+
+  async function startListening() {
+    try {
+      await AudioBridge.startMic();
+    } catch (err) {
+      logActivity("Microphone unavailable");
+      setState(STATES.ERROR, { label: "Microphone Blocked", detail: "Check mic permissions for this page.", progress: 10, meta: "NO MIC" });
+      await wait(1400);
+      setState(STATES.IDLE);
+      return;
+    }
+    setState(STATES.LISTENING);
+    logActivity("Microphone activated");
+  }
+
+  async function stopListeningAndTranscribe() {
+    const blob = await AudioBridge.stopMic();
+    updateMicUI();
+    if (!blob || blob.size < 200) {
+      // Too short to be real speech (e.g. accidental tap) - just go back to idle quietly.
+      setState(STATES.IDLE);
+      return;
+    }
+    setState(STATES.PROCESSING, { label: "Transcribing", detail: "Converting speech to text…", progress: 30, meta: "STT" });
+    try {
+      const form = new FormData();
+      form.append("file", blob, "command.webm");
+      const res = await fetch(BACKEND_URL + "/api/transcribe", { method: "POST", body: form });
+      const data = await res.json();
+      if (!res.ok || data.error || !data.text || !data.text.trim()) {
+        logActivity("Didn't catch that");
+        setState(STATES.ERROR, { label: "Didn't Catch That", detail: "Try speaking again, closer to the mic.", progress: 10, meta: "STT" });
+        await wait(1400);
+        setState(STATES.IDLE);
+        return;
+      }
+      stopListening(data.text.trim());
+    } catch (err) {
+      logActivity("Transcription failed");
+      setState(STATES.ERROR, { label: "Connection Lost", detail: "Couldn't reach the Jarvix backend.", progress: 10, meta: "OFFLINE" });
+      setConnStatus(false);
+      await wait(1400);
+      setState(STATES.IDLE);
+    }
+  }
+
+  function stopListening(finalText) {
+    updateMicUI();
+    if (finalText) sendCommand(finalText, { fromVoice: true });
+  }
+
+  /* ---- backend connection config ---- */
+  const BACKEND_URL = "http://localhost:8000";
+  const USE_REAL_BACKEND = true; // typed/voice commands AND Demo Mode all hit the real Jarvix backend when true
+  const sessionId = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : String(Date.now()) + Math.random();
+  let sidePanelSetThisTurn = false; // true when a real tool_result (memory/goals) rendered a side panel this turn, so the SPEAKING transition doesn't wipe it
+
+  // Maps real tool names (app/brain/tools_registry.py) to a JARVIX state +
+  // human label, so the UI reacts correctly to whichever tool the real
+  // backend actually decided to call - not a scripted step list.
+  const TOOL_META = {
+    web_search:            { state: "SEARCHING", label: "Searching Web",      meta: "WEB QUERY" },
+    search_opportunities:  { state: "SEARCHING", label: "Searching Web",      meta: "WEB QUERY" },
+    get_news:              { state: "SEARCHING", label: "Fetching News",      meta: "NEWS" },
+    get_recent_emails:     { state: "SEARCHING", label: "Scanning Inbox",     meta: "EMAIL" },
+    search_memories:       { state: "PROCESSING", label: "Checking Memory",   meta: "MEMORY" },
+    get_recent_memories:   { state: "PROCESSING", label: "Checking Memory",   meta: "MEMORY" },
+    get_goals:             { state: "PROCESSING", label: "Checking Goals",    meta: "GOALS" },
+    get_upcoming_events:   { state: "SEARCHING", label: "Checking Calendar",  meta: "CALENDAR" },
+    get_events_for_date:   { state: "SEARCHING", label: "Checking Calendar",  meta: "CALENDAR" },
+    list_projects:         { state: "PROCESSING", label: "Reading Projects",  meta: "PROJECTS" },
+    get_project:           { state: "PROCESSING", label: "Reading Projects",  meta: "PROJECTS" },
+    get_tasks:             { state: "PROCESSING", label: "Reading Tasks",     meta: "TASKS" },
+    get_opportunities:     { state: "PROCESSING", label: "Ranking Matches",   meta: "OPPORTUNITIES" },
+    get_applications:      { state: "PROCESSING", label: "Reading Applications", meta: "APPLICATIONS" },
+    search_people:         { state: "PROCESSING", label: "Looking Up Contact", meta: "PEOPLE" },
+    get_meetings:          { state: "PROCESSING", label: "Reading Meetings",  meta: "MEETINGS" },
+    browser_task:          { state: "EXECUTING", label: "Operating Browser", meta: "BROWSER" },
+  };
+  function toolMeta(name) {
+    return TOOL_META[name] || { state: "EXECUTING", label: "Running " + name.replace(/_/g, " "), meta: "TOOL" };
+  }
+  function humanToolLabel(name) {
+    return name.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  }
+
+  async function processCommand(text, opts) {
+    opts = opts || {};
+    if (!USE_REAL_BACKEND || opts.forceSimulate) {
+      return processCommandSimulated(text);
+    }
+    try {
+      await processCommandReal(text);
+    } catch (err) {
+      setState(STATES.ERROR, { label: "Connection Lost", detail: "Couldn't reach the Jarvix backend.", progress: 10, meta: "OFFLINE" });
+      logActivity("Backend unreachable");
+      await addTranscriptLine("jarvix", "I can't reach my backend right now. Is the local server running?");
+      setConnStatus(false);
+      await wait(1200);
+      setState(STATES.IDLE);
+    }
+  }
+
+  async function processCommandSimulated(text) {
+    setState(STATES.PROCESSING, { label: "Understanding Request", detail: "Parsing intent and context…", progress: 25, meta: "REASONING" });
+    logActivity("Understood command");
+    await wait(900);
+
+    const sim = simulateResponse(text);
+
+    for (const step of sim.steps) {
+      setState(step.state, step.action);
+      logActivity(step.log);
+      if (step.sidePanel) step.sidePanel();
+      await wait(step.duration);
+    }
+
+    clearSidePanel();
+    setState(STATES.SPEAKING, { label: "JARVIX Speaking", detail: "Delivering response…", progress: 90, meta: "AUDIO OUT" });
+    await addTranscriptLine("jarvix", sim.finalReply);
+    logActivity("Response delivered");
+    await speakResponse(sim.finalReply, { forceSimulate: true });
+
+    setState(STATES.IDLE);
+  }
+
+  /* ---- real backend integration: POST /api/command, stream SSE events ---- */
+  async function processCommandReal(text) {
+    setState(STATES.PROCESSING, { label: "Understanding Request", detail: "Parsing intent and context…", progress: 20, meta: "REASONING" });
+
+    const response = await fetch(BACKEND_URL + "/api/command", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: sessionId, text: text }),
+    });
+    if (!response.ok || !response.body) throw new Error("bad response");
+    setConnStatus(true);
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let finalText = null;
+    sidePanelSetThisTurn = false;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n\n");
+      buffer = lines.pop(); // keep any partial event for the next chunk
+
+      for (const chunk of lines) {
+        const line = chunk.trim();
+        if (!line.startsWith("data:")) continue;
+        let event;
+        try {
+          event = JSON.parse(line.slice(5).trim());
+        } catch (e) {
+          continue;
+        }
+        handleBackendEvent(event);
+        if (event.type === "final") finalText = event.text;
+        if (event.type === "error") throw new Error(event.message || "backend error");
+      }
+    }
+
+    if (!sidePanelSetThisTurn) clearSidePanel();
+    setState(STATES.SPEAKING, { label: "JARVIX Speaking", detail: "Delivering response…", progress: 90, meta: "AUDIO OUT" });
+    const reply = finalText || "I didn't get a response back.";
+    await addTranscriptLine("jarvix", reply);
+    logActivity("Response delivered");
+    await speakResponse(reply);
+    setState(STATES.IDLE);
+  }
+
+  function handleBackendEvent(event) {
+    switch (event.type) {
+      case "thinking":
+        setState(STATES.PROCESSING, { label: "Reasoning", detail: "Thinking it through…", progress: 40, meta: "REASONING" });
+        break;
+      case "tool_call": {
+        const meta = toolMeta(event.name);
+        setState(STATES[meta.state], { label: meta.label, detail: humanToolLabel(event.name) + "…", progress: 55, meta: meta.meta });
+        logActivity(humanToolLabel(event.name));
+        break;
+      }
+      case "tool_result": {
+        const meta = toolMeta(event.name);
+        setState(STATES[meta.state], { label: meta.label, detail: "Got a result from " + humanToolLabel(event.name) + ".", progress: 75, meta: meta.meta });
+        if (event.name === "get_recent_memories" && Array.isArray(event.result)) {
+          memoryPanel(event.result);
+          sidePanelSetThisTurn = true;
+        } else if (event.name === "get_goals" && Array.isArray(event.result)) {
+          goalsPanel(event.result);
+          sidePanelSetThisTurn = true;
+        }
+        break;
+      }
+      case "clarification":
+      case "confirmation":
+      case "answer":
+        // final reply text arrives via the "final" event; nothing to render here yet.
+        break;
+      // ---- Browser agent (app/browser/tools.py) - a SECOND, inner tool
+      // loop nested inside the browser_task tool_call above. These events
+      // stream live sub-steps of that loop (open/read/click/pause/ask/done),
+      // distinct from the outer tool_call/tool_result events. ----
+      case "browser_task_start":
+        setState(STATES.EXECUTING, { label: "Operating Browser", detail: event.instruction || "Starting browser task…", progress: 50, meta: "BROWSER" });
+        logActivity("Browser: " + (event.instruction || "starting task"));
+        browserTaskPanel({ instruction: event.instruction });
+        sidePanelSetThisTurn = true;
+        break;
+      case "browser_read":
+        setState(STATES.EXECUTING, { label: "Reading Page", detail: event.title || event.url || "Reading the page…", progress: 60, meta: "BROWSER" });
+        logActivity("Browser: reading " + (event.title || event.url || "page"));
+        browserTaskPanel({ page: { k: "Page", v: event.title || event.url || "" } });
+        break;
+      case "browser_action":
+        setState(STATES.EXECUTING, { label: "Acting In Browser", detail: humanToolLabel(event.name || "action") + "…", progress: 65, meta: "BROWSER" });
+        logActivity("Browser: " + (event.result || event.name || "action"));
+        browserTaskPanel({ page: { k: humanToolLabel(event.name || "Action"), v: event.result || "" } });
+        break;
+      case "browser_confirmation":
+        setState(STATES.EXECUTING, { label: "Awaiting Confirmation", detail: event.description || "Waiting for your go-ahead…", progress: 80, meta: "CONFIRM" });
+        logActivity("Browser: needs confirmation - " + (event.description || ""));
+        browserTaskPanel({ status: "Waiting for your confirmation", page: { k: "Pending", v: event.description || "" } });
+        break;
+      case "browser_ask_user":
+        setState(STATES.EXECUTING, { label: "Needs Info", detail: event.question || "Jarvix needs more information…", progress: 80, meta: "INFO" });
+        logActivity("Browser: asking - " + (event.question || ""));
+        browserTaskPanel({ status: "Needs more information", page: { k: "Question", v: event.question || "" } });
+        break;
+      case "browser_done":
+        logActivity("Browser: task finished");
+        browserTaskPanel({ status: "Finished" });
+        break;
+      case "browser_thinking":
+        setState(STATES.PROCESSING, { label: "Browser Reasoning", detail: "Deciding the next step…", progress: 55, meta: "BROWSER" });
+        break;
+      default:
+        break;
+    }
+  }
+
+  async function speakResponse(text, opts) {
+    opts = opts || {};
+    if (!USE_REAL_BACKEND || opts.forceSimulate || !text || !text.trim()) {
+      await wait(400 + text.length * 12);
+      return;
+    }
+    try {
+      const res = await fetch(BACKEND_URL + "/api/speak", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+      if (!res.ok) throw new Error("tts request failed");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const audioEl = new Audio(url);
+      AudioBridge.analyzePlayback(audioEl);
+      await new Promise((resolve) => {
+        audioEl.onended = resolve;
+        audioEl.onerror = resolve;
+        audioEl.play().catch(resolve);
+      });
+      AudioBridge.stopAnalysis();
+      coreViz.setLiveLevel(null);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      logActivity("Speech playback failed");
+      AudioBridge.stopAnalysis();
+      coreViz.setLiveLevel(null);
+      await wait(400 + text.length * 12); // still hold SPEAKING state roughly as long as it would have talked
+    }
+  }
+
+  function sendCommand(text, opts) {
+    opts = opts || {};
+    app.messages.push({ who: "user", text });
+    addTranscriptLine("user", text, { progressive: !opts.fast });
+    logActivity("Command received");
+    processCommand(text, { forceSimulate: !!opts.forceSimulate });
+  }
+
+  /* ---- connection status polling ---- */
+  function setConnStatus(ok) {
+    el.connDot.classList.toggle("warn", !ok);
+  }
+  async function pollHealth() {
+    try {
+      const res = await fetch(BACKEND_URL + "/api/health", { method: "GET" });
+      setConnStatus(res.ok);
+    } catch (e) {
+      setConnStatus(false);
+    }
+  }
+  if (USE_REAL_BACKEND) {
+    pollHealth();
+    setInterval(pollHealth, 10000);
+  }
+
+  function wait(ms) { return new Promise((r) => setTimeout(r, ms)); }
+
+  /* ---- response simulation library (stand-in for backend) ---- */
+  function simulateResponse(text) {
+    const lower = text.toLowerCase();
+
+    if (lower.includes("opportunit")) {
+      return {
+        steps: [
+          { state: STATES.SEARCHING, action: { label: "Searching Web", detail: "Searching 14 sources…", progress: 45, meta: "14 SOURCES" }, log: "Searched opportunities", duration: 1400,
+            sidePanel: () => opportunityPanel({ location: "Amsterdam", sources: 14, found: "—", topFit: "—" }) },
+          { state: STATES.SEARCHING, action: { label: "Ranking Matches", detail: "8 opportunities found. Scoring fit…", progress: 70, meta: "8 FOUND" }, log: "Found 8 opportunities", duration: 1100,
+            sidePanel: () => opportunityPanel({ location: "Amsterdam", sources: 14, found: 8, topFit: 92 }) },
+          { state: STATES.EXECUTING, action: { label: "Saving Results", detail: "Saving 8 opportunities to memory…", progress: 85, meta: "WRITE" }, log: "Saved 8 opportunities", duration: 800 },
+        ],
+        finalReply: "I found eight relevant opportunities in Amsterdam. The strongest match is a Software Engineering internship at ASML, with a ninety-two percent fit against your recent goals. Want the full list?",
+      };
+    }
+
+    if (lower.includes("remember") || lower.includes("remind")) {
+      return {
+        steps: [
+          { state: STATES.EXECUTING, action: { label: "Structuring Task", detail: "STRUCTURING TASK…", progress: 55, meta: "TASK" }, log: "Structured task",
+            duration: 1000, sidePanel: () => taskPanel({ title: "Email advisor", due: "Tomorrow" }) },
+          { state: STATES.EXECUTING, action: { label: "Saving Task", detail: "Updating memory…", progress: 80, meta: "DATABASE" }, log: "Memory updated", duration: 700 },
+        ],
+        finalReply: "Create task: email advisor. Due tomorrow. Confirm?",
+      };
+    }
+
+    if (lower.includes("calendar") || lower.includes("schedule") || lower.includes("meeting")) {
+      return {
+        steps: [
+          { state: STATES.SEARCHING, action: { label: "Checking Calendar", detail: "Checking your calendar…", progress: 55, meta: "CALENDAR" }, log: "Calendar synchronized", duration: 1000 },
+        ],
+        finalReply: "You have three events today. Your next one is a design review at two thirty this afternoon.",
+      };
+    }
+
+    if (lower.includes("email") || lower.includes("inbox") || lower.includes("mail")) {
+      return {
+        steps: [
+          { state: STATES.SEARCHING, action: { label: "Scanning Inbox", detail: "Scanning recent emails…", progress: 50, meta: "EMAIL" }, log: "Scanned recent emails", duration: 1100,
+            sidePanel: () => applicationPanel({ company: "ASML", position: "Software Engineering Intern", status: "Interviewing" }) },
+        ],
+        finalReply: "You have two unread emails relevant to your ASML application. The recruiter confirmed your interview for Thursday at eleven.",
+      };
+    }
+
+    if (lower.includes("goal") || lower.includes("memory") || lower.includes("recall")) {
+      return {
+        steps: [
+          { state: STATES.PROCESSING, action: { label: "Checking Memory", detail: "Checking your recent goals…", progress: 60, meta: "MEMORY" }, log: "Recalled recent goals", duration: 1000 },
+        ],
+        finalReply: "Your top active goal is landing a summer internship in Amsterdam. You've made progress on two related applications this week.",
+      };
+    }
+
+    return {
+      steps: [
+        { state: STATES.PROCESSING, action: { label: "Reasoning", detail: "Composing a response…", progress: 60, meta: "REASONING" }, log: "Composed response", duration: 900 },
+      ],
+      finalReply: "Understood. I've noted that — let me know if you'd like me to take any action on it.",
+    };
+  }
+
+  /* ============================================================
+     INPUT WIRING
+     ============================================================ */
+  function submitTypedCommand() {
+    const val = el.cmdInput.value.trim();
+    if (!val) return;
+    el.cmdInput.value = "";
+    if (app.jarvixState !== STATES.IDLE) return; // ignore mid-flow submits, matches a real assistant
+    sendCommand(val);
+  }
+  el.sendBtn.addEventListener("click", submitTypedCommand);
+  el.cmdInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") submitTypedCommand();
+  });
+
+  // Push-to-talk: click to start recording, click again to stop and
+  // transcribe. A safety cap auto-stops a forgotten-open mic.
+  const MIC_MAX_RECORD_MS = 20000;
+  let micMaxTimer = null;
+  el.micBtn.addEventListener("click", () => {
+    if (app.isListening) {
+      clearTimeout(micMaxTimer);
+      stopListeningAndTranscribe();
+      return;
+    }
+    if (app.jarvixState !== STATES.IDLE) return;
+    startListening();
+    micMaxTimer = setTimeout(() => {
+      if (app.isListening) stopListeningAndTranscribe();
+    }, MIC_MAX_RECORD_MS);
+  });
+
+  /* ============================================================
+     DEMO MODE — live auto-cycle through the REAL backend, for recording
+     a showcase clip (real LLM answers, real TTS voice, a real browser tab)
+     ============================================================ */
+  let demoRunning = false;
+  let demoAbort = false;
+
+  // LinkedIn/showcase demo script - every line here hits the REAL backend
+  // (genuine GPT-4o-mini responses, genuine OpenAI TTS audio, a genuine
+  // Chrome window for the browser beat) via processCommand(text,
+  // {forceSimulate:false}), not the scripted simulateResponse() path. Chosen
+  // to be safe to run unattended on camera: every beat is read-only or
+  // memory-only - nothing here sends an email, submits a form, or spends
+  // money, so there's no live-demo risk of an accidental real-world action.
+  // Each line was live-tested against the real backend before being put
+  // here - phrasing matters a lot (e.g. "open X and tell me Y" often gets
+  // collapsed by the orchestrator into just "open X"; explicit "open <url>,
+  // click into <specific thing>, read me <specific thing>" phrasing reliably
+  // produces a real navigate+click+read+speak beat instead). Swap the
+  // project/GitHub references for your own before recording.
+  const DEMO_SCRIPT = [
+    "Hey Jarvis, introduce yourself in one sentence.",
+    "What projects am I currently working on?",
+    "What's on my calendar today?",
+    "Open news.ycombinator.com in a real browser tab and read me the top story title.",
+    "What's the news today?",
+  ];
+
+  async function runDemo() {
+    if (demoRunning) {
+      demoAbort = true;
+      demoRunning = false;
+      el.demoBtn.classList.remove("running");
+      el.demoBtn.lastChild.textContent = " DEMO MODE";
+      return;
+    }
+    if (!USE_REAL_BACKEND) {
+      await addTranscriptLine("jarvix", "Demo mode needs the live backend connected - start app/server.py first.");
+      return;
+    }
+    demoRunning = true;
+    demoAbort = false;
+    el.demoBtn.classList.add("running");
+    el.demoBtn.lastChild.textContent = " STOP DEMO";
+
+    for (const cmd of DEMO_SCRIPT) {
+      if (demoAbort) break;
+      // A real, visual LISTENING beat (mic glow, waveform) before each line -
+      // still no mic audio captured, this command is typed in, not spoken,
+      // so the recording stays deterministic and repeatable take after take.
+      setState(STATES.LISTENING);
+      logActivity("Microphone activated");
+      await wait(1400);
+      if (demoAbort) break;
+      setState(STATES.IDLE);
+      updateMicUI();
+
+      app.messages.push({ who: "user", text: cmd });
+      await addTranscriptLine("user", cmd);
+      logActivity("Command received");
+      try {
+        // Awaited directly (not fire-and-forget sendCommand) so each beat's
+        // real backend round trip AND real spoken TTS audio fully finish
+        // before the next command starts.
+        await processCommand(cmd, { forceSimulate: false });
+      } catch (err) {
+        logActivity("Demo beat failed - continuing");
+      }
+      if (demoAbort) break;
+      await wait(900); // brief breathing room between beats
+    }
+
+    demoRunning = false;
+    el.demoBtn.classList.remove("running");
+    el.demoBtn.lastChild.textContent = " DEMO MODE";
+  }
+  el.demoBtn.addEventListener("click", runDemo);
+
+  /* ============================================================
+     BRIEFING — real daily briefing from GET /api/briefing (the same text
+     the terminal's `brief`/`wake` welcome routine speaks: calendar + a
+     "since we last talked" rollup of new opportunities/applications/
+     memories/goals + a meeting follow-up offer).
+     ============================================================ */
+  async function runBriefing() {
+    if (app.jarvixState !== STATES.IDLE) return;
+    if (!USE_REAL_BACKEND) {
+      await addTranscriptLine("jarvix", "Briefing needs the live backend connected.");
+      return;
+    }
+    setState(STATES.PROCESSING, { label: "Preparing Briefing", detail: "Checking calendar and recent activity…", progress: 40, meta: "BRIEFING" });
+    logActivity("Briefing requested");
+    try {
+      const res = await fetch(BACKEND_URL + "/api/briefing");
+      if (!res.ok) throw new Error("briefing request failed");
+      const data = await res.json();
+      const text = (data.text || "").trim() || "Nothing new to report.";
+      setState(STATES.SPEAKING, { label: "JARVIX Speaking", detail: "Delivering briefing…", progress: 90, meta: "AUDIO OUT" });
+      await addTranscriptLine("jarvix", text);
+      logActivity("Briefing delivered");
+      await speakResponse(text);
+    } catch (err) {
+      logActivity("Briefing failed");
+      setState(STATES.ERROR, { label: "Briefing Unavailable", detail: "Couldn't reach the Jarvix backend.", progress: 10, meta: "OFFLINE" });
+      setConnStatus(false);
+      await wait(1200);
+    }
+    setState(STATES.IDLE);
+  }
+  el.briefingBtn.addEventListener("click", runBriefing);
+
+  /* ============================================================
+     BOOT SEQUENCE
+     ============================================================ */
+  async function boot() {
+    setState(STATES.IDLE);
+    logActivity("JARVIX systems initialized");
+    await addTranscriptLine("jarvix", "Systems online. How can I help?", { progressive: true });
+    if (USE_REAL_BACKEND) {
+      await addTranscriptLine(
+        "jarvix",
+        "Say or click Briefing any time for what's new since we last spoke.",
+        { progressive: false }
+      );
+    }
+  }
+  boot();
+
+})();
+</script>

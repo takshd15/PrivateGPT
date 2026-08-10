@@ -1,10 +1,11 @@
-"""Rule-based intent router for Jarvix v2.
+"""Hybrid intent router for Jarvix v2.
 
-Transcribed voice text -> a structured Intent -> a tool call. Deterministic on
-purpose: rules are instant and predictable, so the frequent stuff (open
-app/folder, music, briefing) is matched by rules instead of a network round
-trip. Anything unmatched becomes ``unknown`` and is answered safely instead of
-guessed at.
+Transcribed voice text -> a structured Intent -> a tool call. Deterministic
+rules run first and are instant/predictable, so the frequent stuff (open
+app/folder, music, briefing) never needs a network round trip. Anything the
+rules don't recognize falls through to app/brain/orchestrator.py, the LLM-
+first semantic router that has the full tool registry and recent conversation
+context available and can chain multiple tool calls before answering.
 
 ``execute`` only runs the safe, deterministic intents (apps, folders, music).
 Higher-level intents (brief / today / scan_mail) are returned to the caller
@@ -13,11 +14,21 @@ Higher-level intents (brief / today / scan_mail) are returned to the caller
 
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import dataclass
+from typing import Any, Callable
 
-from app.brain.llm_client import ask_llm
+from app.brain.orchestrator import (
+    AnswerResult,
+    BrowserAskUserResult,
+    BrowserConfirmationResult,
+    BrowserRealChromeGateResult,
+    BrowserResultWrapper,
+    ClarificationResult,
+    ConfirmationResult,
+    Turn,
+    orchestrate,
+)
 from app.tools import desktop, music
 
 # Intent names
@@ -46,9 +57,22 @@ REMEMBER = "remember"
 NEW_PROJECT = "new_project"
 LOG_PROGRESS = "log_progress"
 FIND_OPPORTUNITIES = "find_opportunities"
+# browser_task's own result is spoken as-is (BROWSER_RESULT); a pause for a
+# high-impact in-page action becomes BROWSER_CONFIRM, routed through
+# dialogue.py's browser_confirm Pending state (see _confirmation_to_intent).
+# A genuine information gap (e.g. an application field with nothing on file)
+# becomes BROWSER_ASK, routed through dialogue.py's browser_answer Pending
+# state - same resume pattern, different question (open-ended, not yes/no).
+BROWSER_RESULT = "browser_result"
+BROWSER_CONFIRM = "browser_confirm"
+BROWSER_ASK = "browser_ask"
+# Real-Chrome mode only: the per-task gate before Jarvix drives the user's own
+# live browser. Routed through dialogue.py's browser_real_chrome_gate Pending
+# state (yes = run the task, no = leave the browser alone).
+BROWSER_GATE = "browser_gate"
 # Never parsed from user speech - only ever proactively armed by main.py's
 # briefing flow (dialogue.pending set directly), so it's intentionally absent
-# from _parse_rules/_coerce_llm_intent/the LLM prompt's intent list.
+# from _parse_rules and the orchestrator's tool-to-intent mapping.
 MEETING_FOLLOWUP = "meeting_followup"
 CLARIFICATION_NEEDED = "clarification_needed"
 UNKNOWN = "unknown"
@@ -90,6 +114,18 @@ class Intent:
     recipient: str | None = None
     message: str | None = None
     values: dict | None = None
+    # Only set for BROWSER_CONFIRM - the paused browser_task loop state
+    # (app.browser.tools.BrowserPaused) so dialogue.py can resume the SAME
+    # in-progress browser task once the user answers yes/no.
+    browser_paused: Any | None = None
+    # Only set for BROWSER_ASK - the browser_task loop state waiting on an
+    # open-ended answer (app.browser.tools.BrowserAskingUser), so dialogue.py
+    # can resume the SAME in-progress browser task with whatever the user says.
+    browser_asking: Any | None = None
+    # Only set for BROWSER_GATE - the real-Chrome per-task gate state
+    # (app.browser.tools.BrowserRealChromeGate) so dialogue.py can run the task
+    # on approval or abandon it on decline.
+    browser_gate: Any | None = None
 
 
 def _extract_recipient(text: str) -> str | None:
@@ -293,8 +329,15 @@ def _parse_rules(text: str) -> Intent:
     if any(k in t for k in ("remember", "remind me", "don't forget", "dont forget")):
         return Intent(REMEMBER, raw=text)
 
-    # 3b. New project.
-    if "new project" in t or ("working on" in t and "project" in t):
+    # 3b. New project - declaring one is starting, not asking to list what
+    #     already exists. "I'm working on/starting a NEW project" (or an
+    #     explicit first-person announcement) creates one; a bare question
+    #     like "what projects am I working on" must fall through instead (no
+    #     rule here reads projects back - that's the orchestrator's job via
+    #     the list_projects tool) rather than being misread as project #3.
+    if "new project" in t or (("starting" in t or "started" in t) and "project" in t):
+        return Intent(NEW_PROJECT, raw=text)
+    if re.match(r"^(i'?m|i am|i've|i have|just)\s+(working on|building|starting)\b", t) and "project" in t:
         return Intent(NEW_PROJECT, raw=text)
 
     # 3c. Progress/update logging.
@@ -393,142 +436,122 @@ def _parse_rules(text: str) -> Intent:
     return Intent(UNKNOWN, raw=text)
 
 
-def _coerce_llm_intent(data: dict, raw: str) -> Intent:
-    name = str(data.get("intent") or UNKNOWN).strip().lower()
-    allowed = {
-        OPEN_APP,
-        OPEN_FOLDER,
-        MUSIC_PLAY_PAUSE,
-        MUSIC_NEXT,
-        MUSIC_PREVIOUS,
-        MUSIC_VOLUME_UP,
-        MUSIC_VOLUME_DOWN,
-        MUSIC_PLAY_QUERY,
-        BRIEF,
-        TODAY,
-        READ_EMAILS,
-        SCAN_MAIL,
-        DRAFT_EMAIL,
-        SEND_EMAIL,
-        QUESTION,
-        CONVERSATION,
-        WEATHER,
-        TIME,
-        CALENDAR_DATE,
-        ADD_EVENT,
-        NEWS,
-        REMEMBER,
-        NEW_PROJECT,
-        LOG_PROGRESS,
-        FIND_OPPORTUNITIES,
-        CLARIFICATION_NEEDED,
-        UNKNOWN,
-    }
-    if name not in allowed:
-        return Intent(UNKNOWN, raw=raw)
-
-    arg_value = data.get("arg")
-    arg = str(arg_value).strip() if arg_value is not None else None
-    recipient = data.get("recipient")
-    recipient = str(recipient).strip() if recipient is not None else None
-    message = data.get("message")
-    message = str(message).strip() if message is not None else None
-
-    if name == OPEN_APP and arg:
-        arg = _match_alias(arg.lower(), desktop.list_apps())
-        if not arg:
-            return Intent(UNKNOWN, raw=raw)
-    if name == OPEN_FOLDER and arg:
-        arg = _match_alias(arg.lower(), desktop.list_folders())
-        if not arg:
-            return Intent(UNKNOWN, raw=raw)
-
-    return Intent(name, arg=arg, raw=raw, recipient=recipient, message=message)
+# Intents the orchestrator's tool calls map back onto, so a mutating tool
+# selection (e.g. create_calendar_event) flows through the SAME dialogue.py
+# pending-confirmation states the deterministic ADD_EVENT/SEND_EMAIL rules
+# already use, instead of inventing a second confirmation path.
+_TOOL_TO_INTENT = {
+    "create_calendar_event": ADD_EVENT,
+    "send_email": SEND_EMAIL,
+    "remember_task": REMEMBER,
+    "create_project": NEW_PROJECT,
+    "log_progress": LOG_PROGRESS,
+}
 
 
-def _parse_with_llm(text: str) -> Intent:
-    apps = ", ".join(desktop.list_apps())
-    folders = ", ".join(desktop.list_folders())
-    system_prompt = f"""
-You classify one spoken command for Jarvix, a voice assistant that calls tools.
-
-Decision procedure - follow in order:
-1. Identify what the user is actually asking for.
-2. Check whether exactly one of the intents listed below is the correct tool for it.
-   Read each intent's description carefully; do not pick an intent whose
-   description doesn't match just because a keyword overlaps.
-3. If exactly one intent fits, return it with its required fields filled in.
-4. If NO listed intent is the right tool for this request (it needs general
-   knowledge, explanation, opinion, or reasoning instead), return {QUESTION} so
-   the assistant answers directly instead of forcing a bad tool match.
-5. Only use {CLARIFICATION_NEEDED} when the text itself is too broken/vague to
-   even identify what is being asked (not merely because no tool fits it).
-
-Return ONLY valid JSON with keys: intent, arg, recipient, message.
-Use null when a field is not needed.
-
-Allowed intents:
-- {OPEN_APP}: open a configured app. arg must be one of: {apps}
-- {OPEN_FOLDER}: open a configured folder. arg must be one of: {folders}
-- {MUSIC_PLAY_QUERY}: play a requested song. arg is the song/artist/Spotify URL, or null for generic music.
-- {MUSIC_PLAY_PAUSE}: pause, resume, or toggle current playback.
-- {MUSIC_NEXT}: next/change/skip song.
-- {MUSIC_PREVIOUS}: previous/back/last song.
-- {MUSIC_VOLUME_UP}: louder/volume up.
-- {MUSIC_VOLUME_DOWN}: quieter/volume down.
-- {READ_EMAILS}: read or summarize Gmail/inbox messages.
-- {SCAN_MAIL}: check Gmail for calendar-worthy events/deadlines and add approved items to Calendar.
-- {ADD_EVENT}: create/add/schedule a brand-new calendar event the user is describing now (not extracted from email).
-- {REMEMBER}: remember/remind/don't-forget a task or reminder. Takes priority over drafting/sending an email even if the task mentions emailing someone - "remind me to email X" is a task, not an email to send.
-- {NEW_PROJECT}: the user says they're starting/working on a new project.
-- {LOG_PROGRESS}: log/give a progress update on an existing project, application, or opportunity.
-- {FIND_OPPORTUNITIES}: an explicit REQUEST to search/find opportunities right now (e.g. "find opportunities for me", "search for grants", "look for hackathons"). arg is the requested location, or null if not stated. A statement of wanting/trying to achieve something (e.g. "I want to get into grad school", "I'm trying to land an internship at X") is {CONVERSATION} or {QUESTION}, NOT this - the assistant should respond conversationally, not launch a search uninvited.
-- {TODAY}: summarize today's schedule/plan/tasks.
-- {CALENDAR_DATE}: calendar/schedule for a day other than today. arg is the spoken date phrase.
-- {BRIEF}: brief/catch up/good morning.
-- {DRAFT_EMAIL}: draft an email. recipient/message when present.
-- {SEND_EMAIL}: send an email. recipient/message when present.
-- {NEWS}: current news headlines/top stories.
-- {WEATHER}: current weather or forecast. arg is the requested location or null.
-- {TIME}: current local time.
-- {QUESTION}: knowledge, explanation, advice, reasoning, or anything no other intent covers.
-- {CONVERSATION}: casual chat that does not need a tool.
-- {CLARIFICATION_NEEDED}: fragment/nonsense/likely speech-recognition failure.
-- {UNKNOWN}: reserved; prefer {QUESTION} instead when in doubt.
-
-Safety:
-- Never invent app or folder aliases.
-- Use {SCAN_MAIL} only when the command asks to find/add calendar events from email.
-- Use {READ_EMAILS} when the command only asks to read/check/summarize email.
-- Use {ADD_EVENT} only when the user is directly describing a new event to create, not asking to read/check the calendar.
-- Use {REMEMBER} whenever the trigger word is "remember"/"remind me"/"don't forget", regardless of what the reminder is about.
-- Use {CLARIFICATION_NEEDED} for fragments like "can you please", "by calendar", "and you", or nonsense - not for legitimate questions that simply have no dedicated tool.
-"""
-    user_prompt = f"Command: {text}"
-    try:
-        raw = ask_llm(
-            system_prompt,
-            user_prompt,
-            json_mode=True,
-            timeout=4,
-            num_predict=80,
+def _confirmation_to_intent(result: ConfirmationResult, text: str) -> Intent:
+    """A mutating tool the orchestrator selected, re-expressed as the same
+    Intent the deterministic rules would have produced for it - so it flows
+    through dialogue.py's EXISTING pending-confirmation/slot-filling states
+    (which still ask for any details the orchestrator didn't already have)
+    instead of a second, parallel confirmation system."""
+    mapped = _TOOL_TO_INTENT.get(result.tool_name)
+    args = result.arguments
+    if mapped == ADD_EVENT:
+        return Intent(
+            ADD_EVENT,
+            raw=text,
+            values={"title": args.get("title", ""), "date": args.get("date", ""), "start_time": args.get("start_time")},
         )
-        data = json.loads(raw)
+    if mapped == SEND_EMAIL:
+        return Intent(SEND_EMAIL, raw=text, recipient=args.get("recipient"), message=args.get("message"))
+    if mapped == NEW_PROJECT:
+        # Unlike REMEMBER/LOG_PROGRESS below, NEW_PROJECT's slot-filling in
+        # dialogue.py is multi-turn (project_name -> project_describe ->
+        # project_confirm), so a bare Intent(NEW_PROJECT, raw=text) with no
+        # values would re-arm project_name and wait for the NEXT user turn to
+        # fill in the name - and that next turn is the user's confirmation
+        # reply ("yes"/"exactly, save this"), not a project name, so it got
+        # captured as the name instead and the project never actually saved
+        # (see jarvix.log 2026-08-10: "Trend Analyzer" stuck re-confirming
+        # forever). When the orchestrator already extracted a name, pass it
+        # straight through so dialogue.py can go directly to project_confirm
+        # instead of re-asking for information it already has.
+        name = (args.get("name") or "").strip()
+        if name:
+            return Intent(NEW_PROJECT, raw=text, values={"name": name, "description": args.get("description") or ""})
+        return Intent(NEW_PROJECT, raw=text)
+    if mapped in (REMEMBER, LOG_PROGRESS):
+        # These two are handled by dialogue.py re-running its own
+        # structuring.py-backed slot filling from `raw` (see _handle_inner) -
+        # both do so IMMEDIATELY within the same turn (no follow-up round
+        # trip), so returning the bare intent with no values is safe here,
+        # unlike NEW_PROJECT above.
+        return Intent(mapped, raw=text)
+    return Intent(UNKNOWN, raw=text)
+
+
+def _parse_with_orchestrator(
+    text: str, history: list[Turn] | None, on_event: Callable[[dict], None] | None = None
+) -> Intent:
+    """Fallback for anything the deterministic rules didn't match: hands the
+    request to the LLM orchestrator (app/brain/orchestrator.py), which has the
+    full tool registry and recent conversation context available - unlike the
+    old single-shot classify-and-return call this replaces, it can call
+    multiple tools before deciding on a final answer or a clarification.
+
+    ``on_event`` is passed straight through to orchestrate() - see its
+    docstring in app/brain/orchestrator.py for the event shapes. Optional;
+    None (the default) changes nothing about existing behavior.
+    """
+    try:
+        result = orchestrate(text, history=history or [], on_event=on_event)
     except Exception:
         return Intent(UNKNOWN, raw=text)
-    return _coerce_llm_intent(data, text)
+
+    if isinstance(result, AnswerResult):
+        return Intent(QUESTION, raw=text, values={"answer": result.text})
+    if isinstance(result, ClarificationResult):
+        return Intent(CLARIFICATION_NEEDED, raw=text, values={"question": result.question})
+    if isinstance(result, ConfirmationResult):
+        return _confirmation_to_intent(result, text)
+    if isinstance(result, BrowserResultWrapper):
+        return Intent(BROWSER_RESULT, raw=text, values={"answer": result.text})
+    if isinstance(result, BrowserConfirmationResult):
+        return Intent(BROWSER_CONFIRM, raw=text, browser_paused=result.paused, values={"description": result.description})
+    if isinstance(result, BrowserAskUserResult):
+        return Intent(BROWSER_ASK, raw=text, browser_asking=result.asking, values={"question": result.question})
+    if isinstance(result, BrowserRealChromeGateResult):
+        return Intent(BROWSER_GATE, raw=text, browser_gate=result.gate, values={"instruction": result.instruction})
+    return Intent(UNKNOWN, raw=text)
 
 
-def parse(text: str, use_llm: bool = True) -> Intent:
+def parse(
+    text: str,
+    use_llm: bool = True,
+    history: list[Turn] | None = None,
+    on_event: Callable[[dict], None] | None = None,
+) -> Intent:
     """Map raw transcribed text to an Intent. Never raises.
 
-    Rules handle common commands instantly. The local LLM is used only as a
-    fallback for unfamiliar wording.
+    Rules handle common commands (open app/folder, music, briefing, and every
+    other deterministic pattern) instantly with no network round trip. When
+    rules can't classify the request (UNKNOWN) OR only get as far as
+    "this is some kind of question/chat" (QUESTION/CONVERSATION - rules have
+    no tool registry or conversation memory of their own), it's handed to the
+    LLM orchestrator instead, so an open-ended question is answered with real
+    tool-grounded context rather than a plain, memory-less LLM call. Only
+    when ``use_llm`` is true (the deterministic-rules test suite calls this
+    with use_llm=False to test _parse_rules in isolation).
+
+    ``on_event`` is an optional live-progress callback forwarded to the
+    orchestrator when it's actually reached; ignored (and never called) when
+    a rule resolves the request instead, since there's nothing to stream.
     """
     intent = _parse_rules(text)
-    if intent.name != UNKNOWN or not use_llm:
+    if not use_llm or intent.name not in (UNKNOWN, QUESTION, CONVERSATION):
         return intent
-    return _parse_with_llm(text)
+    return _parse_with_orchestrator(text, history, on_event=on_event)
 
 
 def execute(intent: Intent) -> str | None:

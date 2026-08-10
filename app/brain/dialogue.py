@@ -2,11 +2,24 @@
 
 from __future__ import annotations
 
+import re
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date as date_cls, datetime
 
 from app.brain import intent_router, structuring
+from app.brain.orchestrator import Turn, orchestrate
+from app.browser.tools import (
+    BrowserAskingUser,
+    BrowserDone,
+    BrowserFailed,
+    BrowserNeedsHuman,
+    BrowserPaused,
+    resume_browser_task,
+    resume_browser_task_with_answer,
+    resume_real_chrome_task,
+)
 from app.tools import desktop, live_info
 
 
@@ -16,9 +29,27 @@ class Pending:
     values: dict[str, str] = field(default_factory=dict)
 
 
-# Accepted affirmative answers at any confirmation prompt (add_event, remember,
-# new_project, log_progress). Anything else cancels that flow.
-_CONFIRM_WORDS = {"yes", "yeah", "yep", "confirm", "sure", "correct", "do it", "add it", "save it", "log it"}
+# Word-boundary affirmative/negative markers for confirmation prompts
+# (add_event, remember, new_project, log_progress, meeting_followup). Matched
+# anywhere in the utterance rather than requiring an exact whole-string match,
+# so "Yeah, save this." and "yes please" both count as a clean yes instead of
+# silently falling through to "I didn't save anything" (see _classify_confirmation).
+# "save/add/log THIS" (echoing the assistant's own "Save this?" question back)
+# and "exactly"/"that's right"/"that's correct" were added after a live bug
+# (2026-08-10): "Exactly. Save this." fell through to "ambiguous" because
+# neither word was recognized, silently failing to save a described project
+# even though it's an unambiguous confirmation to a human ear.
+_YES_WORDS = re.compile(
+    r"\b(yes|yeah|yep|yup|exactly|confirm(?:ed)?|sure|correct|that'?s right|that'?s correct|"
+    r"do it|add it|add this|save it|save this|log it|log this|go ahead)\b",
+    re.I,
+)
+_NO_WORDS = re.compile(r"\b(no|nope|nah|don't|do not|cancel|never ?mind|stop)\b", re.I)
+# A yes-word followed by a modification clause ("yeah, but call it X instead",
+# "sure, except change the date") is NOT a clean confirmation of the payload
+# as-is - it must be treated as ambiguous so the orchestrator can see the
+# requested change, never silently confirmed with the old details.
+_MODIFICATION_MARKERS = re.compile(r"\b(but|except|instead|actually|change|make it|not)\b", re.I)
 
 # Answers that mean "no specific location" for the opportunity-search flow -
 # opportunities may be remote/global, so this must be offered as a valid
@@ -44,12 +75,65 @@ class VoiceDialogue:
         # Injected by main.py (which owns DB access) so this module never
         # imports app.memory.db directly - keeps brain/ independent of memory/.
         self._known_entities = known_entities or (lambda: [])
+        # Rolling window of the last 5 user/assistant turns, given to the
+        # orchestrator so it can resolve references like "the best one" back
+        # to whatever was just discussed. Bounded so this never grows unbounded
+        # across a long wake session.
+        self.history: deque[Turn] = deque(maxlen=5)
 
     def known_entities(self) -> list[str]:
         try:
             return self._known_entities()
         except Exception:
             return []
+
+    def _record_turn(self, user_text: str, response: str) -> None:
+        self.history.append(Turn("user", user_text))
+        if response:
+            self.history.append(Turn("assistant", response))
+
+    @staticmethod
+    def _classify_confirmation(value: str) -> str:
+        """'yes' / 'no' / 'ambiguous' for a reply to an active confirmation
+        prompt. Matches affirmative/negative markers anywhere in the
+        utterance (word-boundary, not exact-string) so "Yeah, save this."
+        counts as a clean yes instead of falling through to a silent no-op.
+        A yes-word paired with a modification marker ("yeah, but call it X
+        instead") is ambiguous, not a clean yes - the payload isn't being
+        confirmed as-is."""
+        has_yes = bool(_YES_WORDS.search(value))
+        has_no = bool(_NO_WORDS.search(value))
+        has_modification = bool(_MODIFICATION_MARKERS.search(value))
+        if has_yes and has_modification:
+            return "ambiguous"
+        if has_yes and not has_no:
+            return "yes"
+        if has_no and not has_yes:
+            return "no"
+        return "ambiguous"
+
+    def _resolve_ambiguous_confirmation(
+        self, text: str, prompt_kind: str, values: dict, on_event: Callable[[dict], None] | None = None
+    ) -> str:
+        """A pending confirmation reply that's neither a clean yes nor no
+        (e.g. "yeah, but change the name to X"). Ask the orchestrator to
+        decide whether this modifies the pending payload and should be
+        re-confirmed, or should be treated as a cancel - never silently
+        discards the pending action."""
+        summary = ", ".join(f"{k}={v}" for k, v in values.items() if v)
+        note = (
+            f"There is a pending '{prompt_kind}' confirmation with details: {summary}. "
+            f"The user's reply was ambiguous. If they're modifying a detail, describe the "
+            f"updated action briefly and ask them to confirm again. If they're declining, say so plainly."
+        )
+        result = orchestrate(text, history=list(self.history), pending_note=note, on_event=on_event)
+        from app.brain.orchestrator import AnswerResult, ClarificationResult
+
+        if isinstance(result, ClarificationResult):
+            return result.question
+        if isinstance(result, AnswerResult):
+            return result.text
+        return "Okay, I didn't change anything."
 
     @staticmethod
     def _resolve_event_date(phrase: str | None) -> str | None:
@@ -96,7 +180,9 @@ class VoiceDialogue:
                 break
         return _CITY_CORRECTIONS.get(lowered, value)
 
-    def _continue(self, text: str) -> tuple[intent_router.Intent | None, str | None]:
+    def _continue(
+        self, text: str, on_event: Callable[[dict], None] | None = None
+    ) -> tuple[intent_router.Intent | None, str | None]:
         assert self.pending is not None
         pending = self.pending
         value = self._value(text)
@@ -156,9 +242,12 @@ class VoiceDialogue:
             pending.kind = "event_confirm"
             return None, self._event_confirmation(pending.values)
         if pending.kind == "event_confirm":
-            if value.lower() not in {"yes", "yeah", "yep", "confirm", "sure", "correct", "do it", "add it"}:
+            verdict = self._classify_confirmation(value)
+            if verdict == "no":
                 self.pending = None
                 return None, "Okay, I didn't add anything."
+            if verdict == "ambiguous":
+                return None, self._resolve_ambiguous_confirmation(text, "add_event", pending.values, on_event=on_event)
             self.pending = None
             return intent_router.Intent(intent_router.ADD_EVENT, raw=text, values=dict(pending.values)), None
 
@@ -167,9 +256,12 @@ class VoiceDialogue:
             candidate = structuring.structure_task(value)
             return self._finish_remember(text, candidate)
         if pending.kind == "remember_confirm":
-            if value.lower() not in _CONFIRM_WORDS:
+            verdict = self._classify_confirmation(value)
+            if verdict == "no":
                 self.pending = None
                 return None, "Okay, I didn't add anything."
+            if verdict == "ambiguous":
+                return None, self._resolve_ambiguous_confirmation(text, "remember", pending.values, on_event=on_event)
             self.pending = None
             return intent_router.Intent(intent_router.REMEMBER, raw=text, values=dict(pending.values)), None
 
@@ -184,9 +276,12 @@ class VoiceDialogue:
             pending.kind = "project_confirm"
             return None, f"Got it — {candidate.name}: {candidate.description} Save this?"
         if pending.kind == "project_confirm":
-            if value.lower() not in _CONFIRM_WORDS:
+            verdict = self._classify_confirmation(value)
+            if verdict == "no":
                 self.pending = None
                 return None, "Okay, I didn't save anything."
+            if verdict == "ambiguous":
+                return None, self._resolve_ambiguous_confirmation(text, "new_project", pending.values, on_event=on_event)
             self.pending = None
             return intent_router.Intent(intent_router.NEW_PROJECT, raw=text, values=dict(pending.values)), None
 
@@ -195,9 +290,12 @@ class VoiceDialogue:
             pending.kind = "progress_confirm"
             return None, self._progress_confirmation(pending.values)
         if pending.kind == "progress_confirm":
-            if value.lower() not in _CONFIRM_WORDS:
+            verdict = self._classify_confirmation(value)
+            if verdict == "no":
                 self.pending = None
                 return None, "Okay, I didn't log anything."
+            if verdict == "ambiguous":
+                return None, self._resolve_ambiguous_confirmation(text, "log_progress", pending.values, on_event=on_event)
             self.pending = None
             return intent_router.Intent(intent_router.LOG_PROGRESS, raw=text, values=dict(pending.values)), None
 
@@ -207,8 +305,45 @@ class VoiceDialogue:
             location = None if lowered in _ANY_LOCATION_WORDS else value
             return intent_router.Intent(intent_router.FIND_OPPORTUNITIES, arg=location, raw=text), None
 
+        if pending.kind == "browser_confirm":
+            self.pending = None
+            verdict = self._classify_confirmation(value)
+            if verdict == "ambiguous":
+                # Treat anything that isn't a clean yes as a decline for a
+                # live in-page action (unlike the DB-write confirmations
+                # above) - resuming a stale browser task on a misread "yes"
+                # risks clicking something like Send/Buy for real.
+                verdict = "no"
+            approved = verdict == "yes"
+            return intent_router.Intent(
+                intent_router.BROWSER_RESULT,
+                raw=text,
+                values={"answer": self._resume_browser(pending.values["paused"], approved)},
+            ), None
+
+        if pending.kind == "browser_answer":
+            self.pending = None
+            answer = self._value(text)
+            return intent_router.Intent(
+                intent_router.BROWSER_RESULT,
+                raw=text,
+                values={"answer": self._resume_browser_answer(pending.values["asking"], answer)},
+            ), None
+
+        if pending.kind == "browser_real_chrome_gate":
+            self.pending = None
+            verdict = self._classify_confirmation(value)
+            # Ambiguous = decline: this gate authorizes driving the user's OWN
+            # live browser (all their logins), so only a clean yes proceeds.
+            approved = verdict == "yes"
+            return intent_router.Intent(
+                intent_router.BROWSER_RESULT,
+                raw=text,
+                values={"answer": self._resume_real_chrome(pending.values["gate"], approved)},
+            ), None
+
         if pending.kind == "meeting_followup_offer":
-            if value.lower() not in _CONFIRM_WORDS:
+            if self._classify_confirmation(value) != "yes":
                 self.pending = None
                 return intent_router.Intent(
                     intent_router.MEETING_FOLLOWUP,
@@ -254,6 +389,54 @@ class VoiceDialogue:
         when = f", due {due_date}" if due_date else ""
         return None, f"I'll add: {candidate.title}{when}. Confirm?"
 
+    def _land_browser_result(self, result) -> str:
+        """Shared tail for every browser_task resume path (confirm, answer):
+        terminal results are spoken as-is; a fresh pause of EITHER kind
+        re-arms `self.pending` so the task's next yes/no or open-ended
+        question chains through instead of being dropped - a single
+        multi-step task (e.g. an application) can hit several of these in a
+        row before task_done.
+
+        resume_browser_task()/resume_browser_task_with_answer() call
+        app/browser/tools.py's _drive_loop directly and so return ITS raw
+        result types (BrowserPaused/BrowserAskingUser) - NOT the
+        app/brain/orchestrator.py wrapper types (BrowserConfirmationResult/
+        BrowserAskUserResult) that the FIRST call into a fresh task goes
+        through. Both shapes carry the same paused-loop state, just under
+        different field names, so both are handled here."""
+        if isinstance(result, BrowserDone):
+            return result.summary
+        if isinstance(result, BrowserNeedsHuman):
+            return result.reason
+        if isinstance(result, BrowserFailed):
+            return result.reason
+        if isinstance(result, BrowserPaused):
+            self.pending = Pending("browser_confirm", {"paused": result})
+            return result.description
+        if isinstance(result, BrowserAskingUser):
+            self.pending = Pending("browser_answer", {"asking": result})
+            return result.question
+        return "Something went wrong controlling the browser."
+
+    def _resume_browser(self, paused, approved: bool) -> str:
+        """Resume a paused browser_task after the user answered the
+        confirmation prompt, returning the spoken-style result. The paused
+        loop's page/tab was left untouched, so 'yes' executes exactly the one
+        pending action and continues; 'no' tells the model it was declined
+        and lets it wrap up instead of retrying."""
+        return self._land_browser_result(resume_browser_task(paused, approved))
+
+    def _resume_browser_answer(self, asking, answer: str) -> str:
+        """Resume a browser_task that asked an open-ended question (a missing
+        form/profile detail, not a yes/no) with the user's actual answer."""
+        return self._land_browser_result(resume_browser_task_with_answer(asking, answer))
+
+    def _resume_real_chrome(self, gate, approved: bool) -> str:
+        """Run (approved) or abandon (declined) a real-Chrome task after the
+        per-task gate. Approval runs the actual agent loop, whose result lands
+        the same way as any other browser task (done / pause / ask)."""
+        return self._land_browser_result(resume_real_chrome_task(gate, approved))
+
     @staticmethod
     def _progress_confirmation(values: dict) -> str:
         entity = values.get("entity_name") or "that"
@@ -278,16 +461,31 @@ class VoiceDialogue:
             when = f"{label} (all day)"
         return f"Add '{title}' on {when} to your calendar?"
 
-    def handle(self, text: str, execute: Callable[[intent_router.Intent], str]) -> str:
+    def handle(
+        self,
+        text: str,
+        execute: Callable[[intent_router.Intent], str],
+        on_event: Callable[[dict], None] | None = None,
+    ) -> str:
+        response = self._handle_inner(text, execute, on_event=on_event)
+        self._record_turn(text, response)
+        return response
+
+    def _handle_inner(
+        self,
+        text: str,
+        execute: Callable[[intent_router.Intent], str],
+        on_event: Callable[[dict], None] | None = None,
+    ) -> str:
         if self.pending is not None:
-            intent, response = self._continue(text)
+            intent, response = self._continue(text, on_event=on_event)
             if response is not None:
                 return response
             if intent is None:
                 return "I didn't catch that clearly. Can you repeat it?"
             return execute(intent)
 
-        intent = intent_router.parse(text)
+        intent = intent_router.parse(text, history=list(self.history), on_event=on_event)
         if intent.name in {intent_router.SEND_EMAIL, intent_router.DRAFT_EMAIL}:
             values = {"intent": intent.name}
             if not intent.recipient:
@@ -311,6 +509,16 @@ class VoiceDialogue:
             _, response = self._finish_remember(text, candidate)
             return response
         if intent.name == intent_router.NEW_PROJECT:
+            name = (intent.values or {}).get("name", "").strip() if intent.values else ""
+            if name:
+                # The orchestrator already extracted name+description in one
+                # shot (see intent_router._confirmation_to_intent) - go
+                # straight to confirmation instead of re-asking for the name,
+                # which would otherwise capture the user's NEXT reply (their
+                # actual confirmation word) as the project name instead.
+                description = (intent.values or {}).get("description", "").strip()
+                self.pending = Pending("project_confirm", {"name": name, "description": description, "status": "active"})
+                return f"Got it — {name}: {description} Save this?" if description else f"Got it — {name}. Save this?"
             self.pending = Pending("project_name")
             return "What's the project called?"
         if intent.name == intent_router.LOG_PROGRESS:
@@ -338,6 +546,21 @@ class VoiceDialogue:
         if intent.name == intent_router.FIND_OPPORTUNITIES and not intent.arg:
             self.pending = Pending("opportunity_location")
             return "What location? You can also say any location."
+        if intent.name == intent_router.BROWSER_CONFIRM:
+            description = (intent.values or {}).get("description") or "do this"
+            self.pending = Pending("browser_confirm", {"paused": intent.browser_paused})
+            return f"I'm about to {description}, sir. Shall I proceed?"
+        if intent.name == intent_router.BROWSER_ASK:
+            question = (intent.values or {}).get("question") or "I need a bit more information - what should I do?"
+            self.pending = Pending("browser_answer", {"asking": intent.browser_asking})
+            return question
+        if intent.name == intent_router.BROWSER_GATE:
+            instruction = (intent.values or {}).get("instruction") or "that"
+            self.pending = Pending("browser_real_chrome_gate", {"gate": intent.browser_gate})
+            return (
+                f"Heads up, sir - this will use your real Chrome, with everything you're signed "
+                f"into. Shall I go ahead and {instruction}?"
+            )
         if intent.name == intent_router.CLARIFICATION_NEEDED and intent.arg == "folder":
             self.pending = Pending("folder")
             return "Which folder should I open?"

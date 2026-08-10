@@ -24,3 +24,9 @@ app/memory/brief_state.json
 
 # Background run log
 jarvix.log
+
+# Browser control (app/browser/*) - persistent Chrome profile (cookies/login
+# sessions - never commit), plus screenshots/downloads the browser agent saves.
+chrome-profile/
+browser_screenshots/
+browser_downloads/

@@ -1,45 +1,51 @@
-# Jarvix — Local Voice Laptop Operator
+# Jarvix 🧠🎙️ — a JARVIS-style voice assistant that actually runs your laptop
 
-Jarvix is a **voice-first** assistant for your Windows laptop. Say the wake
-word ("hey jarvis", or double-clap / press Enter depending on `WAKE_MODE`) and
-it greets you, speaks a calendar briefing, opens your editor and project
-folder, starts music, and takes spoken commands from there — routing each one
-to a specific tool. It also remembers past conversations (Postgres/pgvector
-RAG memory) and asks for explicit confirmation before any calendar write or
-email send.
+Say **"Hey Jarvis"** and it answers back — in a JARVIS voice, JARVIS wit — then
+briefs your calendar, reads your email, manages your projects, and drives a
+**real Chrome browser** to get things done on any website: apply to
+internships, check LinkedIn, find flights, log into services — like a person
+would, not an API integration. It remembers everything you tell it across
+sessions, asks before anything risky, and it's fully open source.
 
-The wake-word listener runs **locally** (`faster-whisper`, always-on, no cloud
-calls for ambient room noise). Everything after a confirmed wake is
-cloud-backed: voice commands are transcribed by AssemblyAI, the brain and
-text-to-speech run on OpenAI's API, plus Google (Gmail/Calendar), Spotify, and
-NewsAPI for the tools that need them.
+```
+"Hey Jarvis, find opportunities for me and open the best one in my browser."
+   → searches, ranks by fit, opens the real page, reads it back to you.
 
-> **Reality check:** Jarvix can't run while the laptop is off or asleep. It
-> runs once you're logged in and the background process has been started (see
-> [Run on startup](#run-on-startup)). It needs microphone permission.
+"Apply to this internship — use my resume."
+   → fills the form itself, drafts the pitch, pauses right before Submit.
+
+"Save this as a new project: an AI poker trainer that reads betting odds."
+   → remembered. Ask about it next week — it still knows.
+```
+
+**One weekend build. Local wake-word detection, an LLM tool-calling brain,
+persistent memory, and an agentic browser with its own safety rails —
+all wired into one voice loop.**
 
 ---
 
-## What it can do
+## Highlights
 
-| Tool | What it does | Confirmation needed? |
-|---|---|---|
-| Calendar read | Speaks today's/tomorrow's/a specific day's Google Calendar events | No |
-| **Add calendar event** | Multi-turn voice dialogue (title → date → time) that creates a real Google Calendar event | Yes — spoken "yes" after Jarvix reads back the details |
-| Scan mail for events | Reads recent Gmail, has OpenAI propose calendar-worthy items (meetings, deadlines, bookings...), shows them, and only adds the ones you approve | Yes — typed approval in the terminal |
-| Read/summarize email | Reads recent Gmail and gives a one-sentence, OpenAI-generated summary of each message's actual point | No (read-only) |
-| News | Fetches top headlines (NewsAPI) and gives a one-sentence OpenAI summary of each | No (read-only) |
-| Draft email | Has OpenAI write a short email from your instruction, reads it aloud | No (never sends) |
-| Send email | Same as draft, then actually sends via Gmail | Yes — spoken "should I send this?" |
-| Open app / folder | Launches an app or opens a folder, from an **allowlist only** (`app/memory/aliases.json`) — no arbitrary paths or shell commands | No |
-| Music control | Play/pause/next/prev/volume/mute (OS media keys) and play a specific song/artist (Spotify) | No |
-| Weather | Current conditions for a spoken or default city (Open-Meteo, no key needed) | No |
-| Time | Current local time | No |
-| General questions / chat | Answered directly by OpenAI, with relevant past conversations pulled in as context | No |
+- 🌐 **Agentic browser control** — a real, visible Chrome window that navigates,
+  reads, clicks, types, and fills out forms on any site. It resolves "open
+  &lt;name&gt;" against your actual browsing history, applies to jobs with
+  your saved resume, and **always pauses for your go-ahead** before anything
+  irreversible (send, buy, submit, delete, publish, change a password).
+- 🧠 **Real memory, not a context window** — every conversation, project, goal,
+  and task lives in Postgres/pgvector. Tell it about a project once; ask
+  about it next week and it still knows.
+- 🗣️ **JARVIS voice and personality** — OpenAI TTS tuned to a calm, dry-witted
+  British-butler cadence, driven by a local always-on wake-word listener
+  (`faster-whisper`) so ambient room audio never leaves your machine.
+- 🛠️ **A real tool-calling brain**, not a chatbot with plugins — an LLM
+  orchestrator chains calendar, email, news, memory, and browser tools in one
+  request, deciding what it needs and when, with a hard confirmation gate in
+  front of every mutating action.
+- 🔒 **Safety by construction** — an allowlist for openable apps/folders, a
+  code-enforced blocklist for banking/password-manager sites in browser mode,
+  and every risky action requires an explicit spoken "yes."
 
-Multi-turn follow-ups fill in missing details when you leave something out —
-e.g. asking to email someone without saying what to say, or asking for the
-weather without naming a city.
+Full capability + confirmation-policy table → [What it does in detail](#what-it-does-in-detail).
 
 ---
 
@@ -90,6 +96,145 @@ module.
 
 ---
 
+## Browser control: how Jarvix operates a real website
+
+`app/browser/` gives the orchestrator one more tool, `browser_task`, for
+anything that means actually *using* a website rather than a canned API call
+(Gmail/Calendar/Spotify already have direct tools and stay on those — browser
+control is for everything else: GitHub, university portals, flight search,
+shopping, arbitrary web apps).
+
+```
+Jarvix (voice/text) → app/brain/orchestrator.py (outer tool loop)
+                           ↓ selects browser_task(instruction)
+                     app/browser/tools.py (inner browser agent loop)
+                           ↓ read_page / click / type / goto / ...
+                     app/browser/actions.py → Playwright → dedicated Chrome profile
+```
+
+**Two loops, not one.** The outer orchestrator (the same one that answers
+"what's the weather" or drafts a calendar event) picks `browser_task` like any
+other tool, handing it one plain-language instruction. From there, a *second*,
+independent agent loop (`app/browser/tools.py:run_browser_task`) takes over:
+it reads the page (`app/browser/state.py` turns the DOM into a short numbered
+list of interactive elements + visible text, not raw HTML), decides the next
+click/type/navigate, executes it, and reads again — repeating until the task
+is done, fails, or needs you. This mirrors the outer orchestrator's own
+iterative tool-calling design (`app/brain/orchestrator.py`), just over a
+browser-specific action set instead of the data-lookup tool registry.
+
+**Pause-and-resume confirmation.** Before any step with a real-world
+consequence (send, submit, buy, delete, publish, agree to terms, change a
+password/security setting, ...), the loop stops **before** touching the page —
+flagged either because the model marked the action `high_impact: true`, or
+because `app/browser/safety.py`'s keyword backstop recognizes the target
+label ("Send", "Delete Account", "Place Order", ...) regardless of what the
+model thought. The browser tab is left open exactly as it was; Jarvix asks
+you aloud ("I'm about to click 'Send', sir. Shall I proceed?") through the
+same `VoiceDialogue` pending-confirmation mechanism as every other
+confirmation, and on "yes" resumes the **same** loop to actually perform that
+one action and continue — it never restarts the task or re-fills the form.
+
+**CAPTCHA/2FA/security checks:** the loop never attempts to solve these. If
+`read_page` detects challenge language on the page, or the model calls
+`needs_human`, Jarvix stops and tells you what's blocking it so you can handle
+it by hand, then ask Jarvix to continue.
+
+**Recovery:** a failed click/type (stale element, timeout, page changed) is
+reported back to the model as a tool error, not raised — it reads the page
+again and tries a sensible alternative before giving up (`task_failed`).
+
+**"Open &lt;name&gt;" by your own browsing habits.** Saying "open github" or
+"open my bank" doesn't need an exact URL — the `resolve_site_from_history`
+tool (`app/browser/history.py`) reads your **real** Chrome profile's history
+(copied read-only each time, since Chrome keeps the file locked while
+running — never opened in place) and ranks matches by visit count/recency, so
+it opens the actual site/account you use, not a generic guess. This is
+completely separate from `JARVIX_CHROME_PROFILE_DIR` (Jarvix's own,
+initially-empty browsing profile) — history is only ever *read* from your
+normal Chrome, never written to.
+
+**Job/internship applications, applying to part-time work, and messaging
+leads.** The browser agent can fill out an entire application — name, email,
+resume upload, a drafted cover letter/outreach message — using your saved
+`APPLICANT_*` profile (see [Setup](#setup)) via the `get_applicant_profile`
+tool, never inventing a name, email, or work history it wasn't given. It
+**always** pauses for confirmation on the final Submit/Apply/Send click, no
+matter how much of the form it filled in on its own. If a form asks for
+something with no saved answer (e.g. "why do you want to work here" or a
+portfolio URL you haven't set), it calls `ask_user` to ask you directly
+instead of making one up — answered the same way as a yes/no confirmation,
+just with an open-ended reply.
+
+**Thread-safety note (only matters if you're reading the code):**
+Playwright's sync API is bound to whichever OS thread starts it, but
+`app/server.py`'s `/api/command` runs each request on a fresh worker thread.
+`app/browser/manager.py` handles this with one dedicated background thread
+that owns Chrome end-to-end; every Playwright call from `actions.py`/
+`state.py`/`tools.py` is marshalled onto it via `BrowserManager.run(...)`, so
+callers never need to think about which thread they're on.
+
+### Real-Chrome mode — driving your actual browser
+
+`JARVIX_BROWSER_MODE` controls which browser Jarvix drives, and defaults to
+`auto`: on every fresh browser start, it runs a fast, cheap reachability check
+against your real, already-running Chrome; if that succeeds, it attaches to
+it over the DevTools Protocol (CDP) and gets your existing logins; if not, it
+silently falls back to the isolated profile, exactly like Jarvix always
+worked. No flag to remember to flip either way — it adapts to whatever's
+actually running.
+
+| Mode | Behavior |
+|---|---|
+| `auto` (default) | Try real Chrome first, fall back to the isolated profile if it's not reachable |
+| `dedicated` | Always use the isolated profile — never touches your real Chrome |
+| `real` | Always require the real Chrome connection — fails loudly (not a silent fallback) if it isn't reachable, useful for confirming your CDP setup actually works |
+
+Driving your real Chrome removes the profile-isolation boundary — Jarvix can
+then see and act through *every* account that browser is signed into — so
+whenever it's actually used (`real` mode, or `auto` mode when reachable) it's
+guarded three ways:
+
+1. **Never silently assumed.** `auto` only engages it when a live CDP endpoint
+   is actually found; otherwise nothing about your setup changes.
+2. **Per-task approval gate.** Before the agent touches your live browser for
+   a task, Jarvix stops and asks *"this will use your real Chrome, with
+   everything you're signed into — shall I go ahead and &lt;task&gt;?"* Only a
+   clean "yes" proceeds; anything ambiguous declines. Runs *before* any
+   navigation, on top of the existing per-action high-impact gate.
+3. **Code-enforced blocklist.** A protected-site list (banking, brokerages,
+   password managers by default; editable via `JARVIX_BROWSER_BLOCKED_DOMAINS`
+   / `JARVIX_BROWSER_EXTRA_BLOCKED_DOMAINS`) that Jarvix physically cannot
+   navigate to or act on — enforced in `app/browser/safety.py` +
+   `actions.goto` + the agent loop, not merely requested of the model. It also
+   refuses to close your existing tabs, and detaching never closes your Chrome.
+
+**Enabling real Chrome:** Chrome must be relaunched with the classic debug
+flag — the in-browser *"Allow remote debugging for this browser instance"*
+toggle (the Chrome DevTools MCP feature) is a **different, newer protocol**
+that Playwright cannot speak; it will not work here no matter how it's
+enabled. Fully quit Chrome, then relaunch it from a terminal with:
+
+```powershell
+& "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222 --user-data-dir="$env:LOCALAPPDATA\Google\Chrome\User Data"
+```
+
+and point `JARVIX_BROWSER_CDP_URL` at it if you used a different port (default
+`http://127.0.0.1:9222`). This closes all existing Chrome windows first — save
+your work before running it.
+
+> **A real limit, not a bug:** Google (and some other sites) actively detect
+> and block sign-in attempts from automation-controlled browser sessions —
+> "This browser or app may not be secure" — *even when attached to your real
+> Chrome over CDP*, since the CDP attachment itself is part of what's
+> detected. Jarvix will not attempt to disguise or evade this; it's a
+> deliberate security control on Google's end. The reliable way to get
+> Jarvix authenticated anywhere (including with real-Chrome mode on) is to
+> **sign in yourself, once, in the actual browser window** — after that the
+> session persists and future tasks reuse it without hitting sign-in again.
+
+---
+
 ## Memory: how Jarvix remembers things
 
 There are two separate memory systems doing different jobs:
@@ -121,6 +266,34 @@ built from `contacts.example.json`).
 
 ---
 
+## What it does in detail
+
+| Tool | What it does | Confirmation needed? |
+|---|---|---|
+| Calendar read | Speaks today's/tomorrow's/a specific day's Google Calendar events | No |
+| **Add calendar event** | Multi-turn voice dialogue (title → date → time) that creates a real Google Calendar event | Yes — spoken "yes" after Jarvix reads back the details |
+| Scan mail for events | Reads recent Gmail, has OpenAI propose calendar-worthy items (meetings, deadlines, bookings...), shows them, and only adds the ones you approve | Yes — typed approval in the terminal |
+| Read/summarize email | Reads recent Gmail and gives a one-sentence, OpenAI-generated summary of each message's actual point | No (read-only) |
+| News | Fetches top headlines (NewsAPI) and gives a one-sentence OpenAI summary of each | No (read-only) |
+| Draft email | Has OpenAI write a short email from your instruction, reads it aloud | No (never sends) |
+| Send email | Same as draft, then actually sends via Gmail | Yes — spoken "should I send this?" |
+| Open app / folder | Launches an app or opens a folder, from an **allowlist only** (`app/memory/aliases.json`) — no arbitrary paths or shell commands | No |
+| Music control | Play/pause/next/prev/volume/mute (OS media keys) and play a specific song/artist (Spotify) | No |
+| Weather | Current conditions for a spoken or default city (Open-Meteo, no key needed) | No |
+| Time | Current local time | No |
+| General questions / chat | Answered directly by OpenAI, with relevant past conversations pulled in as context | No |
+| **Browser control** | Drives a real Chrome browser to complete open-ended tasks on any website — navigate, read, click, type, fill forms, upload/download, compare options, apply to jobs | Reads/navigation: no. Any high-impact step (send, buy, delete, publish, change a password/security setting, agree to terms, ...): yes — spoken confirmation, mid-task |
+
+Multi-turn follow-ups fill in missing details when you leave something out —
+e.g. asking to email someone without saying what to say, or asking for the
+weather without naming a city.
+
+> **Reality check:** Jarvix can't run while the laptop is off or asleep. It
+> runs once you're logged in and the background process has been started (see
+> [Run on startup](#run-on-startup)). It needs microphone permission.
+
+---
+
 ## Requirements
 
 - Windows 10/11, a working microphone and speakers
@@ -130,6 +303,8 @@ built from `contacts.example.json`).
 - Optional: Spotify Web API credentials (search/play-by-name — media-key
   control works without them), NewsAPI key (news headlines), a Supabase/Postgres
   database with the `pgvector` extension (conversation memory)
+- Optional (browser control): Google Chrome installed (Playwright drives your
+  real Chrome via `channel="chrome"`, not a bundled Chromium)
 
 ---
 
@@ -170,6 +345,45 @@ connection string (a free Supabase project works) with the `pgvector`
 extension available. Jarvix creates the extension and table itself on first
 use (`app/memory/db.py:init_schema`) — no manual migration needed. Leave it
 blank to run without memory.
+
+**Browser control (optional):** Playwright's Python package is already in
+`requirements.txt`; it still needs Chrome registered with it once:
+
+```powershell
+python -m playwright install chrome
+```
+
+`JARVIX_CHROME_PROFILE_DIR` (in `.env`) controls where Jarvix's own,
+dedicated Chrome profile lives — defaults to `jarvix\chrome-profile` if left
+blank. This is a brand-new, empty profile; it is **not** your normal Chrome
+profile and starts out logged into nothing.
+
+**Logging into websites the first time:**
+
+```powershell
+python -m app.main route "open gmail"
+```
+
+The Chrome window that opens (`JARVIX_BROWSER_HEADLESS=false` by default, so
+you can watch it) is Jarvix's dedicated profile. Log into Gmail, GitHub, your
+university portal, etc. by hand in that window, same as any browser — the
+session/cookies are saved to `JARVIX_CHROME_PROFILE_DIR` and reused
+automatically on every future run, so you only do this once per site. Jarvix
+never sees or stores your password — it only ever reads the resulting page
+after you've signed in.
+
+**"Open &lt;name&gt;" by browsing history (optional):** works out of the box
+against the default Chrome install location. If Chrome is installed
+somewhere nonstandard, set `CHROME_REAL_PROFILE_DIR`; `CHROME_REAL_PROFILES`
+(default `Default,Profile 1,Profile 2`) controls which of Chrome's own
+profile folders get searched — add more names if you use additional Chrome
+profiles/people.
+
+**Applicant profile (optional, for job/internship applications):** set
+`APPLICANT_NAME`, `APPLICANT_EMAIL`, `APPLICANT_PHONE`,
+`APPLICANT_RESUME_PATH` (a local file path), `APPLICANT_LINKEDIN_URL`, and
+`APPLICANT_PORTFOLIO_URL` in `.env`. Any left blank simply means Jarvix will
+ask you for that detail instead of filling it in — it's never invented.
 
 ---
 
@@ -215,6 +429,53 @@ my calendar"*, *"what's the news today"*, *"summarize my last 3 emails"*,
 saying I'll be late"*. Jarvix asks a short follow-up when a command like that
 is missing a detail it needs.
 
+Browser examples: *"open Gmail and find my latest email from the University
+of Twente"*, *"check my GitHub notifications"*, *"find the cheapest flight
+from Amsterdam to Mumbai next month"* (Jarvix compares options and reports
+back — it will not book anything without asking first), *"go to my
+university's portal and check if grades are posted"*, *"open github"* /
+*"open my bank"* (opens the actual site you visit most under that name, per
+your real Chrome history), *"apply to the software intern role at this
+company"* / *"message this recruiter about the opening"* (fills the form with
+your saved applicant profile, drafts the message, and always asks before the
+final Submit/Send).
+
+---
+
+## Web frontend (optional)
+
+`app/server.py` is a local FastAPI bridge that exposes the exact same
+`VoiceDialogue`/orchestrator stack the `route`/`wake` commands drive, over
+HTTP + Server-Sent Events instead of a terminal or microphone —
+`web/jarvix-ui.html` is a single-file browser UI built against it (mic input,
+TTS playback, live activity log, and a side panel that renders real
+tool/browser-agent events as they stream in). Single-user, no auth, CORS wide
+open — a localhost dev tool, not a deployed service, matching the rest of
+this codebase's single-tenant design.
+
+```powershell
+cd path\to\jarvix
+.\.venv\Scripts\activate
+.venv\Scripts\python.exe -m uvicorn app.server:app --reload --port 8000
+```
+
+Then open `web/jarvix-ui.html` directly in a browser (or serve it from any
+static file server). Endpoints:
+
+| Endpoint | What it does |
+|---|---|
+| `GET /api/health` | Connection check for the frontend |
+| `POST /api/command` | `{session_id, text}` → SSE stream of live orchestrator/browser-agent progress, ending with `{"type": "final", "text": ...}` |
+| `POST /api/transcribe` | Browser mic recording (multipart) → `{text}` via AssemblyAI |
+| `POST /api/speak` | `{text}` → WAV audio bytes via OpenAI TTS |
+| `GET /api/briefing` | The same daily briefing text `brief`/`wake`'s welcome routine speaks |
+
+A confirmation (calendar write, email send, or a browser agent pausing before
+a high-impact click) works exactly like any other reply — the frontend just
+sends your next spoken/typed "yes"/"no" as a normal `/api/command` call; there's
+no separate confirm/deny button, `VoiceDialogue`'s existing pending-state
+machine handles it the same way it does for the terminal/voice paths.
+
 ---
 
 ## The wake / welcome flow
@@ -253,6 +514,10 @@ key. The short version:
 | Wake trigger | `WAKE_MODE`, `WAKE_WORD`, `CLAP_THRESHOLD` |
 | Text-to-speech | `OPENAI_TTS_MODEL`, `OPENAI_TTS_VOICE`, `OPENAI_TTS_TIMEOUT_SECONDS`, `TTS_RATE`, `TTS_VOLUME`, `TTS_VOICE_HINTS` |
 | Wake routine | `AUTO_OPEN_APP_ON_WAKE`, `AUTO_OPEN_FOLDER_ON_WAKE`, `AUTO_START_MUSIC_ON_WAKE`, `AUTO_MUSIC_QUERY_ON_WAKE`, `AUTO_MUSIC_URI_ON_WAKE` |
+| Browser control | `JARVIX_CHROME_PROFILE_DIR`, `JARVIX_BROWSER_HEADLESS`, `JARVIX_BROWSER_CHANNEL`, `BROWSER_ACTION_TIMEOUT_SECONDS`, `BROWSER_NAV_TIMEOUT_SECONDS`, `MAX_BROWSER_AGENT_STEPS` |
+| "Open &lt;name&gt;" history matching | `CHROME_REAL_PROFILE_DIR`, `CHROME_REAL_PROFILES` |
+| Applicant profile (job applications) | `APPLICANT_NAME`, `APPLICANT_EMAIL`, `APPLICANT_PHONE`, `APPLICANT_RESUME_PATH`, `APPLICANT_LINKEDIN_URL`, `APPLICANT_PORTFOLIO_URL` |
+| Real-Chrome mode (default `auto`) | `JARVIX_BROWSER_MODE`, `JARVIX_BROWSER_CDP_URL`, `JARVIX_BROWSER_CDP_PROBE_TIMEOUT_SECONDS`, `JARVIX_BROWSER_BLOCKED_DOMAINS`, `JARVIX_BROWSER_EXTRA_BLOCKED_DOMAINS` |
 
 `WEB_SEARCH_API_KEY` is declared in `.env.example` but not wired into any
 tool yet — reserved for a future web-search intent.
@@ -278,6 +543,9 @@ tool yet — reserved for a future web-search intent.
 | Add a calendar event you describe | ⚠️ requires a spoken "yes" after Jarvix reads back the details |
 | Scan mail → add calendar events | ⚠️ requires **typed** approval in the terminal (`all`/`none`/`1,3`) |
 | Send email | ⚠️ requires a spoken "should I send this?" confirmation |
+| Browser: navigate, search, read, click, scroll, fill in forms | ✅ auto (no confirmation for browsing/research itself) |
+| Browser: send/submit/buy/book/delete/publish/agree/change password or security settings | ⚠️ pauses mid-task, requires a spoken "yes" before that one step runs |
+| Browser: CAPTCHA, 2FA, password re-entry, biometric checks | ⛔ never attempted — Jarvix stops and asks you to handle it |
 | Arbitrary terminal commands | ⛔ blocked — not implemented |
 | Delete/move files, delete/archive email, delete a calendar event | ⛔ not implemented |
 
@@ -343,6 +611,16 @@ To disable: delete the shortcut from the Startup folder.
 - **`open-app <alias>` fails:** that alias isn't installed where
   `app/tools/desktop.py` looks for it — add the real `.exe` path under `apps`
   in `aliases.json`.
+- **Browser control fails to start / "Couldn't start Chrome":** run
+  `python -m playwright install chrome`. Make sure Google Chrome is actually
+  installed (Playwright drives your real Chrome, not a bundled browser).
+- **Browser task keeps saying it needs a human:** that's by design for
+  CAPTCHA/2FA/password-reentry pages — log in manually in the Jarvix Chrome
+  window once (see [Setup](#setup)), then ask Jarvix to continue.
+- **Browser session isn't staying logged in:** confirm
+  `JARVIX_CHROME_PROFILE_DIR` points at the same folder every run (leave it
+  blank for the default `jarvix\chrome-profile`) and that nothing is deleting
+  that folder between runs.
 
 ---
 
@@ -351,6 +629,7 @@ To disable: delete the shortcut from the Startup folder.
 ```
 app/
   main.py            CLI commands (Typer) + intent dispatch + memory logging
+  server.py          FastAPI/SSE bridge for web/jarvix-ui.html (optional)
   config.py          env-driven settings (loads .env)
   models.py          EventCandidate schema (Pydantic)
   brain/
@@ -372,12 +651,25 @@ app/
     live_info.py                                weather, time, date parsing (no LLM)
   safety/
     permissions.py     confirmation gates for dangerous actions
+  browser/
+    manager.py           persistent Chrome profile lifecycle (Playwright), one dedicated
+                          background thread owns Chrome; every call is marshalled onto it
+    state.py              DOM -> structured page snapshot (numbered elements + text)
+    actions.py             primitive browser actions (goto, click, type, scroll, ...)
+    safety.py               high-impact action / CAPTCHA-2FA keyword classifiers
+    history.py                "open <name>" resolution against your REAL Chrome history
+    tools.py                 inner browser agent loop + its own tool schema
   memory/
     db.py               Postgres/pgvector RAG conversation memory
     cache.py             SQLite cache for email->calendar-candidate extraction
     aliases.json, contacts.json, preferences.json
   runtime/
     startup.py          login entry point (forces wakeword mode)
+web/
+  jarvix-ui.html       single-file browser frontend for app/server.py
 tests/
   test_voice_regressions.py   intent routing, dialogue, wake-word regression tests
+  test_orchestrator.py        LLM-first orchestrator + confirmation-flow wiring
+  test_browser.py             browser agent loop, history matcher, applicant profile,
+                               ask_user flow, safety classifier, confirm/resume wiring
 ```

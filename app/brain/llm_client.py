@@ -48,6 +48,44 @@ def ask_llm(
     return response.json()["choices"][0]["message"]["content"]
 
 
+def ask_llm_message(
+    messages: list[dict],
+    tools: list[dict] | None = None,
+    tool_choice: str = "auto",
+    timeout: int = 15,
+    num_predict: int | None = None,
+) -> dict:
+    """Send a full message list (system/user/assistant/tool turns) and return
+    the raw assistant message dict, e.g. {"role": "assistant", "content": ...,
+    "tool_calls": [...]}. Unlike ``ask_llm`` (which returns only the text
+    content for the existing single-shot classify/extract callers), this
+    preserves ``tool_calls`` so a caller can run OpenAI's native function-
+    calling loop. Never mutates ``messages``.
+    """
+    if not OPENAI_API_KEY:
+        raise ValueError("OpenAI API key is not configured in .env.")
+
+    payload = {"model": OPENAI_MODEL, "messages": messages}
+    if tools:
+        payload["tools"] = tools
+        payload["tool_choice"] = tool_choice
+    if num_predict is not None:
+        payload["max_tokens"] = num_predict
+
+    response = requests.post(
+        _CHAT_URL,
+        headers={
+            "Authorization": f"Bearer {OPENAI_API_KEY}",
+            "Content-Type": "application/json",
+        },
+        json=payload,
+        timeout=timeout,
+    )
+    response.raise_for_status()
+
+    return response.json()["choices"][0]["message"]
+
+
 def embed(text: str, timeout: int = 10) -> list[float]:
     """Return a text-embedding-3-small (1536-dim) embedding for ``text``."""
     if not OPENAI_API_KEY:

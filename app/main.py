@@ -238,6 +238,12 @@ def _dispatch_intent(intent: intent_router.Intent) -> str:
         return _find_opportunities_text(intent.arg)
     if intent.name == intent_router.MEETING_FOLLOWUP:
         return _meeting_followup_text(intent.values or {})
+    if intent.name == intent_router.BROWSER_RESULT:
+        # Both a fresh browser_task's finished/failed/needs-human result and
+        # a resumed one (after browser_confirm's yes/no) arrive here as a
+        # ready-to-speak string - see VoiceDialogue._continue's
+        # "browser_confirm" branch and _resume_browser.
+        return (intent.values or {}).get("answer", "")
     if intent.name == intent_router.TIME:
         return live_info.spoken_time()
     if intent.name == intent_router.WEATHER:
@@ -255,11 +261,20 @@ def _dispatch_intent(intent: intent_router.Intent) -> str:
     if intent.name == intent_router.SEND_EMAIL:
         return _voice_email(intent.recipient, intent.message, send=True)
     if intent.name == intent_router.QUESTION:
-        return answer_spoken(intent.raw)
+        # The orchestrator (app/brain/orchestrator.py) already produced a
+        # tool-grounded answer when it resolved this intent via the LLM
+        # fallback path - reuse it instead of asking answer_spoken() to
+        # re-derive an answer with no tools and no memory of what was found.
+        answer = (intent.values or {}).get("answer")
+        return answer if answer else answer_spoken(intent.raw)
     if intent.name == intent_router.CONVERSATION:
         return answer_spoken(intent.raw)
     if intent.name == intent_router.CLARIFICATION_NEEDED:
-        return "I didn't catch that clearly. Can you repeat it?"
+        # A context-aware question from the orchestrator beats the generic
+        # fallback - it demonstrates Jarvix understood enough to ask something
+        # specific (e.g. "Do you mean which of the four opportunities...?").
+        question = (intent.values or {}).get("question")
+        return question if question else "I didn't catch that clearly. Can you repeat it?"
     # An UNKNOWN intent that still reads as a clear question is a routing miss,
     # not a bad mic. Answer it instead of asking the user to repeat themselves.
     if intent.name == intent_router.UNKNOWN and _looks_like_clear_question(intent.raw):
@@ -701,10 +716,13 @@ def _find_opportunities_text(location: str | None) -> str:
         if opp_id:
             inserted += 1
 
-    top = sorted(candidates, key=lambda c: c.fit_score, reverse=True)[:5]
+    best = max(candidates, key=lambda c: c.fit_score)
     console.print(f"[green]Found {len(candidates)}, saved {inserted}.[/green]")
-    lines = [f"{i}. {c.name} ({c.type}) - {c.reason}" for i, c in enumerate(top, start=1)]
-    return f"I found {len(candidates)} opportunities and saved them. Top picks:\n" + "\n".join(lines)
+    plural = "opportunity" if len(candidates) == 1 else "opportunities"
+    return (
+        f"I found {len(candidates)} {plural} and saved them, sir. "
+        f"{best.name}'s the standout - {best.reason} Want the rest of the list?"
+    )
 
 
 _NUMBER_WORDS = {
@@ -1005,6 +1023,7 @@ def route(text: str = typer.Argument(..., help="Command text to route, e.g. 'ope
     # instead of losing them.
     for bg_thread in _last_background_threads:
         bg_thread.join(timeout=10)
+    _shutdown_browser_if_running()
 
 
 # --------------------------------------------------------------------------- #
@@ -1241,6 +1260,19 @@ def wake(
         raise typer.Exit(code=1)
     except KeyboardInterrupt:
         console.print("\n[yellow]Jarvix going to sleep.[/yellow]")
+    finally:
+        _shutdown_browser_if_running()
+
+
+def _shutdown_browser_if_running() -> None:
+    """Close the Playwright Chrome context (if browser_task ever started one)
+    so no orphaned Chrome process/profile lock survives the wake loop."""
+    from app.browser.manager import get_manager
+
+    manager = get_manager()
+    if manager.is_running:
+        console.print("[dim]Closing Jarvix's browser...[/dim]")
+        manager.shutdown()
 
 
 @app.command()

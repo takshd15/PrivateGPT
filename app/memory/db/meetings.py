@@ -103,6 +103,37 @@ def upsert_meeting(
         return None
 
 
+def list_recent(user_id: str, limit: int = 10) -> list[dict]:
+    """Return recent meetings, most recently started first. [] on any failure."""
+    if not DATABASE_URL:
+        return []
+    try:
+        _init_all()
+        with _connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, title, notes, location, starts_at, ends_at, followup_status
+                    FROM meetings
+                    WHERE user_id = %s
+                    ORDER BY starts_at DESC
+                    LIMIT %s;
+                    """,
+                    (user_id, limit),
+                )
+                rows = cur.fetchall()
+        return [
+            {
+                "id": str(r[0]), "title": r[1], "notes": r[2], "location": r[3],
+                "starts_at": r[4], "ends_at": r[5], "followup_status": r[6],
+            }
+            for r in rows
+        ]
+    except Exception as exc:
+        print(f"[memory] list_recent skipped: {exc}")
+        return []
+
+
 def list_followup_candidates(user_id: str, days_ago: int = 7, limit: int = 5) -> list[dict]:
     """Meetings that ended >= days_ago days ago, still pending, with no
     linked progress_events/memories entry mentioning them since. [] on any

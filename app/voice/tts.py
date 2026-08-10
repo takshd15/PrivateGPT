@@ -14,6 +14,7 @@ import sounddevice as sd
 from app.config import (
     OPENAI_API_KEY,
     OPENAI_TTS_MODEL,
+    OPENAI_TTS_SPEED,
     OPENAI_TTS_TIMEOUT_SECONDS,
     OPENAI_TTS_VOICE,
     TTS_RATE,
@@ -73,6 +74,7 @@ def _speak_openai(text: str) -> None:
             "voice": OPENAI_TTS_VOICE,
             "input": text,
             "response_format": "pcm",
+            "speed": OPENAI_TTS_SPEED,
         },
         timeout=OPENAI_TTS_TIMEOUT_SECONDS,
         stream=True,
@@ -88,6 +90,39 @@ def _speak_openai(text: str) -> None:
                 leftover = data[usable_len:]
                 if usable_len:
                     stream.write(np.frombuffer(data[:usable_len], dtype=np.int16))
+
+
+def synthesize(text: str) -> bytes:
+    """Return raw 16-bit PCM audio bytes (OPENAI_TTS_SAMPLE_RATE, mono) for
+    ``text`` via OpenAI's TTS API, instead of playing it through the local
+    speakers like speak()/_speak_openai() do. For HTTP callers (app/server.py)
+    that need to send audio back to a browser rather than play it on the
+    machine running the backend. Raises on failure - unlike speak(), there is
+    no local-speaker fallback to fall back to for a remote caller; the caller
+    decides how to surface the failure."""
+    text = _clean_for_speech(text)
+    if not text:
+        return b""
+    if not OPENAI_API_KEY:
+        raise RuntimeError("OPENAI_API_KEY is not configured.")
+
+    response = requests.post(
+        OPENAI_TTS_URL,
+        headers={
+            "Authorization": f"Bearer {OPENAI_API_KEY}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": OPENAI_TTS_MODEL,
+            "voice": OPENAI_TTS_VOICE,
+            "input": text,
+            "response_format": "pcm",
+            "speed": OPENAI_TTS_SPEED,
+        },
+        timeout=OPENAI_TTS_TIMEOUT_SECONDS,
+    )
+    response.raise_for_status()
+    return response.content
 
 
 def speak(text: str) -> None:

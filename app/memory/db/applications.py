@@ -80,6 +80,37 @@ def insert_application(
         return None
 
 
+def list_applications(user_id: str, limit: int = 20) -> list[dict]:
+    """Return applications, most recently updated first. [] on any failure."""
+    if not DATABASE_URL:
+        return []
+    try:
+        _init_all()
+        with _connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, name, program, status, deadline, notes
+                    FROM applications
+                    WHERE user_id = %s
+                    ORDER BY updated_at DESC
+                    LIMIT %s;
+                    """,
+                    (user_id, limit),
+                )
+                rows = cur.fetchall()
+        return [
+            {
+                "id": str(r[0]), "name": r[1], "program": r[2],
+                "status": r[3], "deadline": r[4], "notes": r[5],
+            }
+            for r in rows
+        ]
+    except Exception as exc:
+        print(f"[memory] list_applications skipped: {exc}")
+        return []
+
+
 def list_updated_since(user_id: str, since_iso: str, limit: int = 10) -> list[dict]:
     """Applications inserted or status-updated since a given ISO timestamp,
     for the briefing rollup. [] on any failure."""

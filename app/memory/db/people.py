@@ -41,6 +41,37 @@ def find_person_by_email(user_id: str, email: str) -> dict | None:
         return None
 
 
+def find_person_by_name(user_id: str, name: str, limit: int = 5) -> list[dict]:
+    """Case-insensitive partial match on name. [] if not found or on failure."""
+    if not DATABASE_URL or not (name or "").strip():
+        return []
+    try:
+        _init_all()
+        with _connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, name, email, role, company_id, notes
+                    FROM people
+                    WHERE user_id = %s AND name ILIKE %s
+                    ORDER BY updated_at DESC
+                    LIMIT %s;
+                    """,
+                    (user_id, f"%{name.strip()}%", limit),
+                )
+                rows = cur.fetchall()
+        return [
+            {
+                "id": str(r[0]), "name": r[1], "email": r[2],
+                "role": r[3], "company_id": str(r[4]) if r[4] else None, "notes": r[5],
+            }
+            for r in rows
+        ]
+    except Exception as exc:
+        print(f"[memory] find_person_by_name skipped: {exc}")
+        return []
+
+
 def upsert_person(
     user_id: str,
     name: str,

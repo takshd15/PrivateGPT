@@ -241,9 +241,18 @@ class StructuredCaptureTests(unittest.TestCase):
         self.assertEqual(captured[0].values["entity_name"], "DAAD Application")
 
     def test_log_progress_missing_entity_asks_once(self):
+        from app.brain.orchestrator import ConfirmationResult
+
         dialogue = VoiceDialogue(known_entities=lambda: [])
         unmatched = ProgressEventCandidate(entity_name="", event_text="Made progress.", event_type="update", confidence=0.5)
-        with patch.object(structuring, "structure_progress_event", return_value=unmatched):
+        # "log some progress" has no deterministic rule match (no "log
+        # progress"/"progress on"/"update on" substring), so it reaches the
+        # orchestrator fallback - stub that boundary (patched where
+        # intent_router imported it) so this stays offline, matching the
+        # class's "no live LLM calls" contract.
+        with patch.object(structuring, "structure_progress_event", return_value=unmatched), patch.object(
+            intent_router, "orchestrate", return_value=ConfirmationResult("log_progress", {"entity_name": "", "event_text": "Made progress."})
+        ):
             prompt = dialogue.handle("log some progress", lambda i: "unexpected")
         self.assertEqual(prompt, "Which project or application is this progress on?")
         confirm_prompt = dialogue.handle("Jarvix", lambda i: "unexpected")
