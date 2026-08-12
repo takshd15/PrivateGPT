@@ -1883,22 +1883,104 @@ body {
   // LinkedIn/showcase demo script - every line here hits the REAL backend
   // (genuine GPT-4o-mini responses, genuine OpenAI TTS audio, a genuine
   // Chrome window for the browser beat) via processCommand(text,
-  // {forceSimulate:false}), not the scripted simulateResponse() path. Chosen
-  // to be safe to run unattended on camera: every beat is read-only or
-  // memory-only - nothing here sends an email, submits a form, or spends
-  // money, so there's no live-demo risk of an accidental real-world action.
+  // {forceSimulate:false}), not the scripted simulateResponse() path.
+  //
+  // UNLIKE the original read-only version of this script, this one
+  // deliberately includes real mutations - remember_task, send_email, and
+  // create_calendar_event all actually write/send for real. Every mutating
+  // tool call in Jarvix stops and asks "Confirm?" first (see dialogue.py's
+  // pending-confirmation flow), so each mutating line here is immediately
+  // followed by a plain "Yes, confirm that." line that auto-accepts it -
+  // there is no special-cased auto-confirm logic in runDemo(), a scripted
+  // "yes" is just the next ordinary turn on the same session_id. Re-running
+  // this demo will re-send a real email to the recipient below and create a
+  // new real task/event each time - expect duplicates on repeat takes.
+  //
   // Each line was live-tested against the real backend before being put
-  // here - phrasing matters a lot (e.g. "open X and tell me Y" often gets
-  // collapsed by the orchestrator into just "open X"; explicit "open <url>,
-  // click into <specific thing>, read me <specific thing>" phrasing reliably
-  // produces a real navigate+click+read+speak beat instead). Swap the
-  // project/GitHub references for your own before recording.
+  // here - phrasing matters a lot:
+  //  - "What are my tasks for today?" gets pulled toward the calendar tool by
+  //    the word "today" (get_events_for_date instead of get_tasks). Dropping
+  //    "today" and asking for open tasks/reminders directly routes to
+  //    get_tasks reliably.
+  //  - The email beat READS (get_recent_emails) rather than sends. Sending was
+  //    tried and pulled out: send_email's slot-filling can't compose a body
+  //    from your task list in one turn, so it stalled on "What should the
+  //    email say?" mid-take, and a real send per run is a poor demo anyway.
+  //    Keep the wording free of "send"/"write"/"draft"/"compose" or block 4 of
+  //    intent_router.parse() grabs it as a draft; keep "read" in and
+  //    "calendar"/"event"/"schedule"/"add" out so it lands on READ_EMAILS.
+  //    Phrased as plain "most recent" on purpose: READ_EMAILS just returns the
+  //    newest messages, so asking for "important emails about my projects"
+  //    reads back the same unfiltered inbox and the ask/answer visibly
+  //    mismatch on camera. There is no per-project email filter to call.
+  //  - "open X and tell me Y" often gets collapsed by the orchestrator into
+  //    just "open X"; explicit "open <url>, click into <specific thing>,
+  //    read me <specific thing>" phrasing reliably produces a real
+  //    navigate+click+read+speak beat instead.
+  //  - remember_task saves exactly ONE task per turn: structuring.structure_task()
+  //    extracts a single title, so conjoining two with "and" silently drops the
+  //    second ("...pitch deck and send follow-up emails to the GDCN leads" saved
+  //    only the pitch deck). One task per remember beat, deliberately.
+  // Kept to one remember_task beat (not two) and tight, single-purpose
+  // sentences throughout so the whole run finishes in under ~90s. Swap the
+  // project/email/GitHub references for your own before recording.
+  // HERO CUT (LinkedIn). Nine beats, ~90s measured end-to-end:
+  //   1   persona hook - "in one sentence" keeps the TTS clip ~6s, not ~15s
+  //   2   persistent memory            -> get_goals
+  //   3-7 multi-turn slot-filling      -> title, date, time, confirm
+  //   8   goal-aware ranking           -> get_goals + get_opportunities + get_project,
+  //       answered as a verdict with a real fit score and the reason
+  //   9   real browser                 -> browser_task resolves "it" from beat 8's
+  //       context into the exact URL and opens a real Chrome tab
+  //
+  // Beats 8/9 are deliberately SPLIT rather than one "rank it and open it"
+  // sentence. Combined, browser_task's own summary becomes the spoken reply
+  // ("Opened the page ... in a new tab") and the ranking reasoning is never
+  // said out loud. Split, you get the verdict spoken in full first, then the
+  // browser acts on it - and "it" resolving across turns is itself a beat.
+  //
+  // Phrasing landmines confirmed live in intent_router.parse(), all of which
+  // silently hijack a beat before the orchestrator ever sees it:
+  //   - "remember" ANYWHERE  -> REMEMBER (asks "What should I remember?"),
+  //     so a memory-recall beat can never use the word. Hence "long-term goals".
+  //   - text starting "find "/"play "/"search for " -> Spotify MUSIC_PLAY_QUERY.
+  //     "Find me the best accelerator..." literally answered "Searching Spotify".
+  //     Lead with "Based on my goals," to stay clear of the prefix match.
+  //   - "opportunit*" + find/search/look -> the FIND_OPPORTUNITIES rule, which
+  //     searches and saves but never opens a browser. Say "accelerator" instead.
+  //   - "open" as a word -> OPEN_APP alias match, falling through to UNKNOWN
+  //     (and on to the orchestrator) only when no desktop app alias matches.
+  //     "open it in a real browser tab" is safe; "open spotify" would not be.
   const DEMO_SCRIPT = [
     "Hey Jarvis, introduce yourself in one sentence.",
-    "What projects am I currently working on?",
-    "What's on my calendar today?",
-    "Open news.ycombinator.com in a real browser tab and read me the top story title.",
-    "What's the news today?",
+    "What are my long-term goals?",
+    "Add a meeting to my calendar.",
+    "GDCN Beta Leads Follow-up",
+    "today",
+    "5 PM",
+    "Yes, confirm that.",
+    "Based on my goals, which accelerator should GDCN apply to, and why?",
+    "Open it in a real browser tab.",
+  ];
+
+  // Full-breadth version - swap this into runDemo() (or reassign DEMO_SCRIPT)
+  // when you want the longer capability tour rather than the 60s cut. Every
+  // line here is live-tested too; it just runs ~2.5min.
+  const FULL_DEMO_SCRIPT = [
+    "Hey Jarvis, introduce yourself and tell me what you can do for me.",
+    "What are my open tasks and reminders?",
+    "Remind me to work on the Fabric Trend Predictor pitch deck.",
+    "Yes, confirm that.",
+    "Read me my 5 most recent emails.",
+    "What are my projects?",
+    "What are my long-term goals?",
+    "Add a meeting to my calendar.",
+    "GDCN Beta Leads Follow-up",
+    "today",
+    "5 PM",
+    "Yes, confirm that.",
+    "Based on my goals, which accelerator should GDCN apply to, and why?",
+    "Open it in a real browser tab.",
   ];
 
   async function runDemo() {
@@ -1925,7 +2007,7 @@ body {
       // so the recording stays deterministic and repeatable take after take.
       setState(STATES.LISTENING);
       logActivity("Microphone activated");
-      await wait(1400);
+      await wait(800);
       if (demoAbort) break;
       setState(STATES.IDLE);
       updateMicUI();
@@ -1942,7 +2024,7 @@ body {
         logActivity("Demo beat failed - continuing");
       }
       if (demoAbort) break;
-      await wait(900); // brief breathing room between beats
+      await wait(450); // brief breathing room between beats
     }
 
     demoRunning = false;

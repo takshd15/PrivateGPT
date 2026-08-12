@@ -130,6 +130,18 @@ class Intent:
 
 def _extract_recipient(text: str) -> str | None:
     """Recipient phrase after ``to`` and before the message instruction."""
+    # A literal email address is matched first and wins outright. The general
+    # name pattern below stops at the first [,.!?], which silently truncates
+    # any real address at its domain dot - "to someone@gmail.com" came back
+    # as "someone@gmail" (live bug, 2026-08-11), i.e. every dotted domain,
+    # which is all of them.
+    m = re.search(
+        r"\bto\s+([A-Za-z0-9][A-Za-z0-9._%+\-']*@[A-Za-z0-9][A-Za-z0-9.\-]*\.[A-Za-z]{2,})",
+        text,
+        re.I,
+    )
+    if m:
+        return m.group(1).strip(".,!?")
     stop = r"(?=\s+(?:saying|telling\s+(?:them|him|her)|to\s+say|that|about)\b|[,.!?]|$)"
     m = re.search(r"\bto\s+([A-Za-z][A-Za-z0-9@+ ._\-']*?)" + stop, text, re.I)
     return " ".join(m.group(1).split()).strip() if m else None
@@ -137,7 +149,15 @@ def _extract_recipient(text: str) -> str | None:
 
 def _extract_message(text: str) -> str:
     """The instruction after a say-marker, e.g. '...saying I'll be late' -> "I'll be late"."""
-    pattern = r"\b(?:" + "|".join(re.escape(m) for m in _SAY_MARKERS) + r")\b\s+(.+)"
+    # The separator accepts a colon ("saying: do the thing") as well as plain
+    # whitespace - dictating with a colon is natural, but a bare \s+ can't
+    # match ':' so the whole message came back empty and the caller fell into
+    # the "What should the email say?" slot-fill (live bug, 2026-08-11).
+    # Deliberately NOT a loose [:,\-]? - that would make the fuzzy markers
+    # ("that", "about") swallow hyphenated words like "about-face".
+    pattern = (
+        r"\b(?:" + "|".join(re.escape(m) for m in _SAY_MARKERS) + r")\b(?:\s*:\s*|\s+)(.+)"
+    )
     m = re.search(pattern, text, re.I)
     return m.group(1).strip() if m else ""
 

@@ -30,3 +30,8 @@ jarvix.log
 chrome-profile/
 browser_screenshots/
 browser_downloads/
+
+# Local DB snapshots taken before clearing tasks/goals/memories for a demo
+# run. These contain real personal data (contacts, reminders, goals) - keep
+# them on disk for recovery, never commit them.
+*-backup-*.json
